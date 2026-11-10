@@ -561,6 +561,9 @@ def main():
 
     create_demo_database()
 
+    # Display business analytics and visualizations
+    show_data_visualizations()
+
     schema = get_schema()
 
     with st.sidebar:
@@ -630,6 +633,11 @@ def main():
 
                     result = execute_sql(sql, parameters)
 
+                    explanation = generate_natural_language_explanation(
+                        question,
+                        result
+                    )
+
                     source = "Context-aware query handling"
 
                 else:
@@ -658,9 +666,9 @@ def main():
                         )
                         return
 
-                    explanation = (
-                        "The AI model generated a query and "
-                        "the database executed it successfully."
+                    explanation = generate_natural_language_explanation(
+                        question,
+                        result
                     )
 
                     source = "Pretrained Text-to-SQL model"
@@ -683,6 +691,190 @@ def main():
 # ==================================================
 # 12. RUN APPLICATION
 # ==================================================
+
+
+
+
+def show_data_visualizations():
+    st.header("📊 Data Visualization & Analytics")
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+
+        customers = pd.read_sql_query(
+            "SELECT * FROM customers", conn
+        )
+
+        products = pd.read_sql_query(
+            "SELECT * FROM products", conn
+        )
+
+        orders = pd.read_sql_query(
+            "SELECT * FROM orders", conn
+        )
+
+        conn.close()
+
+        # Summary metrics
+        st.subheader("Business Overview")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Customers", len(customers))
+        c2.metric("Total Products", len(products))
+        c3.metric("Total Orders", len(orders))
+
+        # Customer analysis
+        st.subheader("1. Customer Analysis")
+
+        if not customers.empty:
+            city_data = (
+                customers.groupby("city")
+                .size()
+                .reset_index(name="Customers")
+            )
+
+            st.write("Customer distribution by city")
+            st.bar_chart(city_data.set_index("city"))
+
+            age_data = (
+                customers.groupby("age")
+                .size()
+                .reset_index(name="Customers")
+            )
+
+            st.write("Customer age distribution")
+            st.bar_chart(age_data.set_index("age"))
+
+        # Product analysis
+        st.subheader("2. Product Analysis")
+
+        if not products.empty:
+            category_data = (
+                products.groupby("category")
+                .size()
+                .reset_index(name="Products")
+            )
+
+            st.write("Products by category")
+            st.bar_chart(category_data.set_index("category"))
+
+            st.write("Product prices")
+            st.bar_chart(
+                products.set_index("product_name")["price"]
+            )
+
+        # Order analysis
+        st.subheader("3. Order Analysis")
+
+        if not orders.empty:
+            orders["order_date"] = pd.to_datetime(
+                orders["order_date"], errors="coerce"
+            )
+
+            orders_by_date = (
+                orders.dropna(subset=["order_date"])
+                .groupby("order_date")
+                .size()
+                .reset_index(name="Orders")
+                .sort_values("order_date")
+            )
+
+            if not orders_by_date.empty:
+                st.write("Orders over time")
+                st.line_chart(
+                    orders_by_date.set_index("order_date")
+                )
+
+            product_orders = orders.merge(
+                products[["product_id", "product_name"]],
+                on="product_id",
+                how="left"
+            )
+
+            product_quantity = (
+                product_orders.groupby("product_name")["quantity"]
+                .sum()
+                .sort_values(ascending=False)
+            )
+
+            st.write("Quantity ordered by product")
+            st.bar_chart(product_quantity)
+
+        st.success("Analytics loaded successfully!")
+
+    except Exception as e:
+        st.error(f"Unable to load analytics: {e}")
+
+
+
+def generate_natural_language_explanation(question, result):
+
+    if result is None:
+        return "Unable to generate an explanation because the query failed."
+
+    if result.empty:
+        return (
+            f"No matching records were found for your question: "
+            f"{question}"
+        )
+
+    q = question.lower()
+
+    # Single-value result
+    if result.shape == (1, 1):
+
+        value = result.iloc[0, 0]
+        column = result.columns[0]
+
+        if "customer" in q:
+            return (
+                f"According to the database, there are "
+                f"{value} customers matching your question."
+            )
+
+        elif "product" in q:
+            return (
+                f"The database shows {value} products "
+                f"matching your question."
+            )
+
+        elif "order" in q:
+            return (
+                f"The database shows {value} orders "
+                f"matching your question."
+            )
+
+        return (
+            f"The result for {column.replace('_', ' ')} "
+            f"is {value}."
+        )
+
+    # Multiple rows
+    row_count = len(result)
+
+    if "customer" in q:
+        return (
+            f"The database returned {row_count} customer "
+            f"record(s) matching your question."
+        )
+
+    elif "product" in q:
+        return (
+            f"The database returned {row_count} product "
+            f"record(s) matching your question."
+        )
+
+    elif "order" in q:
+        return (
+            f"The database returned {row_count} order "
+            f"record(s) matching your question."
+        )
+
+    return (
+        f"Your query successfully retrieved {row_count} "
+        f"matching records from the database."
+    )
+
 
 if __name__ == "__main__":
     main()
