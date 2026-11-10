@@ -1,4 +1,5 @@
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -7,9 +8,10 @@ import streamlit as st
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# --------------------------------------------------
-# APP CONFIGURATION
-# --------------------------------------------------
+
+# ==================================================
+# 1. APP CONFIGURATION
+# ==================================================
 
 st.set_page_config(
     page_title="Context-Aware AI Database Analyst",
@@ -17,18 +19,18 @@ st.set_page_config(
     layout="wide"
 )
 
-APP_DIR = Path(__file__).parent
+APP_DIR = Path("/content")
 DATA_DIR = APP_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "business.db"
 
 MODEL_ID = "alpecevit/flan-t5-base-text2sql"
 
 
-# --------------------------------------------------
-# DATABASE CREATION
-# --------------------------------------------------
+# ==================================================
+# 2. DATABASE CREATION
+# ==================================================
 
 def create_demo_database():
 
@@ -78,6 +80,17 @@ def create_demo_database():
             (6, "Divya", "Mysuru", 23)
         ]
 
+        cursor.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?, ?)",
+            customers
+        )
+
+    product_count = cursor.execute(
+        "SELECT COUNT(*) FROM products"
+    ).fetchone()[0]
+
+    if product_count == 0:
+
         products = [
             (1, "Laptop", "Electronics", 55000),
             (2, "Phone", "Electronics", 25000),
@@ -86,6 +99,17 @@ def create_demo_database():
             (5, "Office Chair", "Furniture", 6500),
             (6, "Keyboard", "Accessories", 1500)
         ]
+
+        cursor.executemany(
+            "INSERT INTO products VALUES (?, ?, ?, ?)",
+            products
+        )
+
+    order_count = cursor.execute(
+        "SELECT COUNT(*) FROM orders"
+    ).fetchone()[0]
+
+    if order_count == 0:
 
         orders = [
             (1, 1, 1, 1, "2026-01-01"),
@@ -101,16 +125,6 @@ def create_demo_database():
         ]
 
         cursor.executemany(
-            "INSERT INTO customers VALUES (?, ?, ?, ?)",
-            customers
-        )
-
-        cursor.executemany(
-            "INSERT INTO products VALUES (?, ?, ?, ?)",
-            products
-        )
-
-        cursor.executemany(
             "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
             orders
         )
@@ -119,35 +133,32 @@ def create_demo_database():
     conn.close()
 
 
-# --------------------------------------------------
-# DATABASE SCHEMA EXTRACTION
-# --------------------------------------------------
+# ==================================================
+# 3. DATABASE SCHEMA EXTRACTION
+# ==================================================
 
 def get_schema():
 
     conn = sqlite3.connect(DB_PATH)
-
     cursor = conn.cursor()
 
     tables = cursor.execute("""
         SELECT name
         FROM sqlite_master
-        WHERE type='table'
+        WHERE type = 'table'
         AND name NOT LIKE 'sqlite_%'
     """).fetchall()
 
     schema = ""
 
-    for table in tables:
-
-        table_name = table[0]
+    for (table_name,) in tables:
 
         columns = cursor.execute(
             f"PRAGMA table_info({table_name})"
         ).fetchall()
 
         column_names = [
-            column[1] + " " + column[2]
+            f"{column[1]} {column[2]}"
             for column in columns
         ]
 
@@ -161,9 +172,9 @@ def get_schema():
     return schema
 
 
-# --------------------------------------------------
-# LOAD PRETRAINED TEXT-TO-SQL MODEL
-# --------------------------------------------------
+# ==================================================
+# 4. LOAD PRETRAINED TEXT-TO-SQL MODEL
+# ==================================================
 
 @st.cache_resource
 def load_model():
@@ -180,19 +191,31 @@ def load_model():
     return tokenizer, model, device
 
 
-# --------------------------------------------------
-# GENERATE SQL
-# --------------------------------------------------
+# ==================================================
+# 5. AI SQL GENERATION
+# ==================================================
 
 def generate_sql(question, schema, tokenizer, model, device):
 
     prompt = f"""
-    Convert the question into a SQLite SQL query.
+    You are an expert SQLite query generator.
 
-    Database schema:
+    Convert the user's question into one valid SQLite SELECT query.
+
+    DATABASE SCHEMA:
     {schema}
 
-    Question:
+    RULES:
+    - Use exact table and column names.
+    - For showing all records, use SELECT *.
+    - For customers from a city, return all customer columns.
+    - Use appropriate WHERE conditions.
+    - For counting records, use COUNT(*).
+    - Only generate SELECT queries.
+    - Do not explain the SQL.
+    - Return SQL only.
+
+    USER QUESTION:
     {question}
 
     SQL:
@@ -213,45 +236,140 @@ def generate_sql(question, schema, tokenizer, model, device):
             num_beams=4
         )
 
-    sql = tokenizer.decode(
+    return tokenizer.decode(
         outputs[0],
         skip_special_tokens=True
-    )
-
-    return sql.strip()
+    ).strip()
 
 
-# --------------------------------------------------
-# READ-ONLY SQL VALIDATION
-# --------------------------------------------------
+# ==================================================
+# 6. CONTEXT-AWARE QUESTION HANDLING
+# ==================================================
+
+def normalize_question(question):
+
+    question = question.lower().strip()
+    question = re.sub(r"[?!.,]", " ", question)
+    question = re.sub(r"\s+", " ", question)
+
+    return question
+
+
+def context_aware_query(question):
+
+    q = normalize_question(question)
+
+    city_aliases = {
+        "bengluru": "Bengaluru",
+        "bengalore": "Bengaluru",
+        "banglore": "Bengaluru",
+        "bangalore": "Bengaluru",
+        "bengaluru": "Bengaluru",
+        "mysore": "Mysuru",
+        "mysuru": "Mysuru",
+        "hyderabad": "Hyderabad",
+        "chennai": "Chennai"
+    }
+
+    # CUSTOMER QUESTIONS
+
+    if "customer" in q:
+
+        for alias, city in city_aliases.items():
+
+            if re.search(r"\b" + re.escape(alias) + r"\b", q):
+
+                return (
+                    "SELECT * FROM customers "
+                    "WHERE LOWER(city) = LOWER(?)",
+                    (city,),
+                    f"Showing customers from {city}."
+                )
+
+        if any(word in q for word in [
+            "how many", "count", "number of", "total"
+        ]):
+
+            return (
+                "SELECT COUNT(*) AS total_customers FROM customers",
+                (),
+                "Here is the total number of customers."
+            )
+
+        if any(word in q for word in [
+            "show", "display", "list", "all"
+        ]):
+
+            return (
+                "SELECT * FROM customers",
+                (),
+                "Showing all customer records."
+            )
+
+    # PRODUCT QUESTIONS
+
+    if "product" in q:
+
+        if any(word in q for word in [
+            "how many", "count", "number of", "total"
+        ]):
+
+            return (
+                "SELECT COUNT(*) AS total_products FROM products",
+                (),
+                "Here is the total number of products."
+            )
+
+        if any(word in q for word in [
+            "show", "list", "display", "all"
+        ]):
+
+            return (
+                "SELECT * FROM products",
+                (),
+                "Showing all products."
+            )
+
+    # ORDER QUESTIONS
+
+    if "order" in q:
+
+        if any(word in q for word in [
+            "how many", "count", "number of", "total"
+        ]):
+
+            return (
+                "SELECT COUNT(*) AS total_orders FROM orders",
+                (),
+                "Here is the total number of orders."
+            )
+
+        if any(word in q for word in [
+            "show", "list", "display", "all"
+        ]):
+
+            return (
+                "SELECT * FROM orders",
+                (),
+                "Showing all orders."
+            )
+
+    return None
+
+
+# ==================================================
+# 7. READ-ONLY SQL VALIDATION
+# ==================================================
 
 def validate_read_only(sql):
 
     cleaned = sql.strip().rstrip(";").strip()
 
     if not cleaned:
-        raise ValueError("The model generated an empty SQL query.")
+        raise ValueError("Empty SQL query generated.")
 
-    if not (
-        cleaned.upper().startswith("SELECT")
-        or cleaned.upper().startswith("WITH")
-    ):
-        raise ValueError("Only SELECT queries are allowed.")
-
-    blocked = [
-        "INSERT", "UPDATE", "DELETE", "DROP",
-        "ALTER", "CREATE", "REPLACE", "ATTACH",
-        "DETACH", "PRAGMA", "VACUUM"
-    ]
-
-    upper_sql = cleaned.upper()
-
-    for word in blocked:
-
-        if word in upper_sql:
-            raise ValueError(
-                f"Blocked SQL operation detected: {word}"
-            )
+    if not re.match(r"^(SELECT|WITH)\b", cleaned, re.I):
+        raise ValueError("Only SELECT queries are permitted.")
 
     if ";" in cleaned:
         raise ValueError("Multiple SQL statements are not allowed.")
@@ -259,11 +377,13 @@ def validate_read_only(sql):
     return cleaned
 
 
-# --------------------------------------------------
-# EXECUTE SQL SAFELY
-# --------------------------------------------------
+# ==================================================
+# 8. SAFE SQL EXECUTION
+# ==================================================
 
-def execute_sql(sql):
+def execute_sql(sql, parameters=()):
+
+    safe_sql = validate_read_only(sql)
 
     conn = sqlite3.connect(
         f"file:{DB_PATH}?mode=ro",
@@ -272,56 +392,67 @@ def execute_sql(sql):
 
     try:
 
-        result = pd.read_sql_query(sql, conn)
+        def authorizer(action, arg1, arg2, database, trigger):
+
+            denied_actions = {
+                sqlite3.SQLITE_INSERT,
+                sqlite3.SQLITE_UPDATE,
+                sqlite3.SQLITE_DELETE,
+                sqlite3.SQLITE_CREATE_TABLE,
+                sqlite3.SQLITE_DROP_TABLE,
+                sqlite3.SQLITE_ALTER_TABLE,
+                sqlite3.SQLITE_ATTACH,
+                sqlite3.SQLITE_DETACH
+            }
+
+            if action in denied_actions:
+                return sqlite3.SQLITE_DENY
+
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorizer)
+
+        result = pd.read_sql_query(
+            safe_sql,
+            conn,
+            params=parameters
+        )
+
+        return result
 
     finally:
-
         conn.close()
 
-    return result
 
+# ==================================================
+# 9. AI QUERY RETRY
+# ==================================================
 
-# --------------------------------------------------
-# SQL ERROR CORRECTION / RETRY
-# --------------------------------------------------
-
-def run_with_correction(
-    question,
-    schema,
-    tokenizer,
-    model,
-    device
-):
+def run_ai_query(question, schema, tokenizer, model, device):
 
     sql = generate_sql(
-        question,
-        schema,
-        tokenizer,
-        model,
-        device
+        question, schema, tokenizer, model, device
     )
 
     for attempt in range(2):
 
         try:
 
-            safe_sql = validate_read_only(sql)
+            result = execute_sql(sql)
 
-            result = execute_sql(safe_sql)
-
-            return safe_sql, result, None
+            return sql, result, None
 
         except Exception as error:
 
             if attempt == 0:
 
                 correction_prompt = f"""
-                Fix the following SQLite query.
+                Correct this SQLite SELECT query.
 
-                Database schema:
+                Schema:
                 {schema}
 
-                Original question:
+                Question:
                 {question}
 
                 Incorrect SQL:
@@ -330,7 +461,7 @@ def run_with_correction(
                 Error:
                 {error}
 
-                Return only a corrected SELECT SQL query.
+                Return only one valid SELECT query.
                 """
 
                 inputs = tokenizer(
@@ -357,67 +488,74 @@ def run_with_correction(
 
                 return sql, None, str(error)
 
+    return sql, None, "Query could not be executed."
 
-# --------------------------------------------------
-# DISPLAY ANSWER
-# --------------------------------------------------
 
-def display_answer(result):
+# ==================================================
+# 10. ANSWER DISPLAY
+# ==================================================
+
+def display_answer(result, explanation):
 
     if result.empty:
 
-        st.info(
-            "The query ran successfully but returned no rows."
+        st.warning(
+            "The query executed successfully, but no matching records were found."
         )
 
         return
 
     st.subheader("🤖 AI Analyst Answer")
 
-    # Single-value answer, such as COUNT or SUM
+    st.success(explanation)
+
     if result.shape == (1, 1):
 
-        answer = result.iloc[0, 0]
+        value = result.iloc[0, 0]
+        column = result.columns[0]
 
-        st.success(f"Answer: {answer}")
+        st.metric(
+            label=column.replace("_", " ").title(),
+            value=value
+        )
 
     elif len(result) == 1:
 
-        st.write(
-            "The query returned the following result:"
-        )
+        st.write("Here is the matching record.")
 
     else:
 
-        st.write(
-            f"The query returned {len(result)} matching records."
-        )
+        st.write(f"Found {len(result)} matching records.")
 
     st.subheader("📊 Query Results")
 
     st.dataframe(
         result,
-        use_container_width=True
+        use_container_width=True,
+        hide_index=True
     )
 
     st.caption(
-        f"{len(result)} row(s), "
+        f"{len(result)} row(s) and "
         f"{len(result.columns)} column(s) returned."
     )
 
 
-# --------------------------------------------------
-# MAIN APPLICATION
-# --------------------------------------------------
+# ==================================================
+# 11. MAIN DASHBOARD
+# ==================================================
 
 def main():
 
     st.title("🤖 Context-Aware AI Database Analyst")
 
-    st.write(
-        "Ask questions about your business database "
-        "using natural language."
-    )
+    st.markdown("""
+    Ask questions about your business database in natural language.
+
+    The system uses a pretrained Text-to-SQL model,
+    database schema context, and context-aware handling
+    for common business questions.
+    """)
 
     create_demo_database()
 
@@ -427,11 +565,11 @@ def main():
 
         st.header("Database Context")
 
-        st.success("Demo SQLite database connected")
+        st.success("SQLite database connected")
 
         st.write("Available tables:")
 
-        st.code("customers\norders\nproducts")
+        st.code("customers\nproducts\norders")
 
         st.divider()
 
@@ -440,94 +578,109 @@ def main():
         st.write(MODEL_ID)
 
         st.caption(
-            "This application uses a pretrained "
-            "Text-to-SQL model. It is not trained "
-            "from scratch in this project."
+            "Pretrained Text-to-SQL model. "
+            "This project does not train the model from scratch."
         )
 
         with st.expander("View database schema"):
-
             st.code(schema)
 
     st.subheader("Ask Your Database")
 
     examples = [
         "Show all customers",
+        "Show customers from Bengaluru",
         "Show customers from Mysuru",
         "How many customers are there?",
-        "How many products are available?",
-        "What is the total number of orders?",
         "Show all products",
-        "Show all orders"
+        "How many products are available?",
+        "Show all orders",
+        "What is the total number of orders?"
     ]
 
-    selected_question = st.selectbox(
-        "Choose an example question",
-        ["Select an example"] + examples
+    selected = st.selectbox(
+        "Try an example question",
+        ["Choose a question"] + examples
     )
 
     question = st.text_input(
         "Enter your question",
-        value=(
-            selected_question
-            if selected_question != "Select an example"
-            else ""
-        ),
-        placeholder="Example: How many orders are there?"
+        value="" if selected == "Choose a question" else selected,
+        placeholder="Example: Show customers from Bengaluru"
     )
 
-    if st.button(
-        "Generate SQL and Analyze",
-        type="primary"
-    ):
+    if st.button("Generate SQL and Analyze", type="primary"):
 
         if not question.strip():
 
             st.warning("Please enter a question.")
-
             return
 
-        with st.spinner(
-            "Loading AI model and analyzing your question..."
-        ):
+        try:
 
-            try:
+            with st.spinner("Understanding your question..."):
 
-                tokenizer, model, device = load_model()
+                rule_result = context_aware_query(question)
 
-                sql, result, error = run_with_correction(
-                    question,
-                    schema,
-                    tokenizer,
-                    model,
-                    device
-                )
+                if rule_result is not None:
 
-                st.subheader("Generated SQL")
+                    sql, parameters, explanation = rule_result
 
-                st.code(sql, language="sql")
+                    result = execute_sql(sql, parameters)
 
-                if error:
-
-                    st.error(
-                        f"Unable to execute the generated query: {error}"
-                    )
+                    source = "Context-aware query handling"
 
                 else:
 
-                    st.success("SQL executed successfully!")
+                    with st.spinner(
+                        "Loading AI model and generating SQL..."
+                    ):
 
-                    display_answer(result)
+                        tokenizer, model, device = load_model()
 
-            except Exception as error:
+                        sql, result, error = run_ai_query(
+                            question,
+                            schema,
+                            tokenizer,
+                            model,
+                            device
+                        )
 
-                st.error(f"Application error: {error}")
+                    if error:
+
+                        st.subheader("Generated SQL")
+                        st.code(sql, language="sql")
+
+                        st.error(
+                            f"Could not execute the generated query: {error}"
+                        )
+                        return
+
+                    explanation = (
+                        "The AI model generated a query and "
+                        "the database executed it successfully."
+                    )
+
+                    source = "Pretrained Text-to-SQL model"
+
+            st.subheader("Generated SQL")
+
+            st.code(sql, language="sql")
+
+            st.caption(f"Query method: {source}")
+
+            st.success("SQL executed successfully!")
+
+            display_answer(result, explanation)
+
+        except Exception as error:
+
+            st.error(f"Application error: {error}")
 
 
-# --------------------------------------------------
-# RUN APPLICATION
-# --------------------------------------------------
+# ==================================================
+# 12. RUN APPLICATION
+# ==================================================
 
 if __name__ == "__main__":
-
     main()
