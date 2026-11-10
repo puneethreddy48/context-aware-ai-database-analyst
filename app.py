@@ -810,71 +810,96 @@ def show_data_visualizations():
 def generate_natural_language_explanation(question, result):
 
     if result is None:
-        return "Unable to generate an explanation because the query failed."
+        return "The query could not be completed."
 
     if result.empty:
-        return (
-            f"No matching records were found for your question: "
-            f"{question}"
-        )
+        return f"No matching records were found for: {question}"
 
-    q = question.lower()
-
-    # Single-value result
-    if result.shape == (1, 1):
-
-        value = result.iloc[0, 0]
-        column = result.columns[0]
-
-        if "customer" in q:
-            return (
-                f"According to the database, there are "
-                f"{value} customers matching your question."
-            )
-
-        elif "product" in q:
-            return (
-                f"The database shows {value} products "
-                f"matching your question."
-            )
-
-        elif "order" in q:
-            return (
-                f"The database shows {value} orders "
-                f"matching your question."
-            )
-
-        return (
-            f"The result for {column.replace('_', ' ')} "
-            f"is {value}."
-        )
-
-    # Multiple rows
     row_count = len(result)
+    columns = {col.lower(): col for col in result.columns}
 
-    if "customer" in q:
-        return (
-            f"The database returned {row_count} customer "
-            f"record(s) matching your question."
-        )
+    # Single-value results, such as COUNT(*)
+    if result.shape == (1, 1):
+        value = result.iloc[0, 0]
+        column = result.columns[0].replace("_", " ").lower()
 
-    elif "product" in q:
-        return (
-            f"The database returned {row_count} product "
-            f"record(s) matching your question."
-        )
+        if any(word in question.lower() for word in
+               ["how many", "count", "number of", "total"]):
+            return (
+                f"The database query found {value} as the "
+                f"total {column.replace('total ', '')}. "
+                f"This value is calculated directly from the database."
+            )
 
-    elif "order" in q:
-        return (
-            f"The database returned {row_count} order "
-            f"record(s) matching your question."
-        )
+        return f"The result for {column} is {value}."
 
-    return (
-        f"Your query successfully retrieved {row_count} "
-        f"matching records from the database."
+    # General summary
+    explanation = (
+        f"Your query returned {row_count} records from the database."
     )
 
+    # Order analysis
+    if "order_id" in columns:
+
+        if "customer_id" in columns:
+            unique_customers = result[columns["customer_id"]].nunique()
+            explanation += (
+                f" These orders involve {unique_customers} unique customers."
+            )
+
+        if "product_id" in columns:
+            unique_products = result[columns["product_id"]].nunique()
+            explanation += (
+                f" They include {unique_products} unique products."
+            )
+
+        if "quantity" in columns:
+            total_quantity = result[columns["quantity"]].sum()
+            explanation += (
+                f" The total quantity ordered is {total_quantity} units."
+            )
+
+        if "order_date" in columns:
+            dates = pd.to_datetime(
+                result[columns["order_date"]], errors="coerce"
+            ).dropna()
+
+            if not dates.empty:
+                explanation += (
+                    f" The orders cover the period from "
+                    f"{dates.min().strftime('%d %b %Y')} to "
+                    f"{dates.max().strftime('%d %b %Y')}."
+                )
+
+    # Customer analysis
+    elif "customer_id" in columns or "customer_name" in columns:
+
+        if "city" in columns:
+            city_count = result[columns["city"]].nunique()
+            explanation += (
+                f" The records cover {city_count} different cities."
+            )
+
+    # Product analysis
+    elif "product_id" in columns or "product_name" in columns:
+
+        if "price" in columns:
+            prices = pd.to_numeric(
+                result[columns["price"]], errors="coerce"
+            ).dropna()
+
+            if not prices.empty:
+                explanation += (
+                    f" Product prices range from "
+                    f"{prices.min():,.2f} to {prices.max():,.2f}."
+                )
+
+    explanation += (
+        f" The result contains {len(result.columns)} columns: "
+        f"{', '.join(result.columns)}."
+    )
+
+    return explanation
 
 if __name__ == "__main__":
     main()
