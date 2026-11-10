@@ -1,4 +1,4 @@
-
+import tempfile
 import re
 import sqlite3
 from pathlib import Path
@@ -19,8 +19,10 @@ st.set_page_config(
     layout="wide"
 )
 
-APP_DIR = Path("/content")
-DATA_DIR = APP_DIR / "data"
+APP_DIR = Path(__file__).parent
+
+# Use a writable temporary directory on Streamlit Cloud
+DATA_DIR = Path(tempfile.gettempdir()) / "context_aware_ai_analyst"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "business.db"
