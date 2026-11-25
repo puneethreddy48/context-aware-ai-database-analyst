@@ -4,28 +4,32 @@
 
 ## Project Overview
 
-Context-Aware AI Database Analyst is an AI-powered application that allows users to interact with an SQLite database using natural language. Instead of manually writing SQL queries, users can ask questions in plain English and receive generated SQL queries and database results through an interactive Streamlit dashboard.
+Context-Aware AI Database Analyst is an AI-powered application that allows users to interact with an SQLite database using natural language. Instead of manually writing SQL queries, users can ask questions in plain English and receive SQL queries and database results through an interactive Streamlit dashboard.
 
-The prototype integrates a pretrained Text-to-SQL model, validates generated queries, executes permitted read-only SQL statements, and uses execution-error feedback for one retry when a query fails.
+The system combines predefined context-aware SQL rules with a pretrained Text-to-SQL model. It supports three execution modes: **Hybrid, Rules Only, and Model Only**. Generated SQL queries are checked using read-only validation before execution.
 
 ## Key Features
 
-- **Database Schema Inspection:** Automatically inspects SQLite database tables and their structures.
-- **Natural Language to SQL:** Converts user questions into SQL queries using the `alpecevit/flan-t5-base-text2sql` model.
-- **Read-Only SQL Validation:** Validates generated queries and restricts execution to permitted read-only statements.
-- **Self-Correction Mechanism:** Attempts one retry using database execution-error feedback.
-- **Interactive Dashboard:** Displays generated SQL queries and corresponding database result rows using Streamlit.
-- **Synthetic Sample Dataset:** Uses demonstration business data for database querying and analysis.
+- **Database Schema Inspection:** Automatically inspects SQLite tables and their structures.
+- **Natural Language to SQL:** Uses the `alpecevit/flan-t5-base-text2sql` pretrained model.
+- **Three Execution Modes:** Supports Hybrid, Rules Only, and Model Only.
+- **Hybrid Query Processing:** Attempts predefined SQL rules first and uses model generation as a fallback.
+- **Read-Only SQL Validation:** Restricts execution to permitted read-only SQL statements.
+- **Error Feedback:** Includes a SQL correction mechanism using database execution feedback.
+- **Interactive Dashboard:** Displays generated SQL queries and corresponding database results.
+- **Synthetic Business Database:** Uses a reproducible SQLite dataset containing 25,500 records.
+- **Evaluation Framework:** Includes benchmark and holdout question partitions and evaluation result files.
 
-## System Workflow
+## System Architecture and Workflow
 
-1. User enters a question in natural language.
+1. The user enters a question in natural language.
 2. The application inspects the SQLite database schema.
-3. The Text-to-SQL model generates an SQL query.
-4. The generated query passes through read-only SQL validation.
-5. The application executes the permitted query.
-6. If execution fails, the system attempts one correction using the error feedback.
+3. The selected execution mode processes the question.
+4. In Hybrid mode, predefined SQL rules are attempted first, followed by model fallback when required.
+5. The generated SQL query passes through read-only validation.
+6. Permitted queries are executed against the SQLite database.
 7. The dashboard displays the generated SQL and query results.
+8. If query execution fails, the application can attempt correction using execution-error feedback.
 
 ## Technology Stack
 
@@ -35,37 +39,106 @@ The prototype integrates a pretrained Text-to-SQL model, validates generated que
 | User Interface | Streamlit |
 | Database | SQLite |
 | Text-to-SQL Model | `alpecevit/flan-t5-base-text2sql` |
-| AI Model Platform | Hugging Face Transformers |
-| Query Processing | SQL validation and execution |
-| Data | Synthetic business demonstration dataset |
+| Model Platform | Hugging Face Transformers |
+| SQL Processing | Python and SQLite |
+| Evaluation | Pandas and custom evaluation scripts |
 
-## Important Academic Note
+## Database Design
 
-This project integrates an existing pretrained Hugging Face model: `alpecevit/flan-t5-base-text2sql`.
+The project uses a synthetic business database generated using `generate_large_database.py`.
 
-According to its model card, the model is fine-tuned on SParC, Spider, and CoSQL datasets.
+| Table | Number of Records |
+|---|---:|
+| Customers | 5,000 |
+| Products | 500 |
+| Orders | 20,000 |
+| **Total** | **25,500** |
 
-The project focuses on integrating Text-to-SQL generation, database schema inspection, read-only query validation, and an error-feedback-based self-correction mechanism.
+**Database file:** `data/large_business.db`
 
-**The model was not newly trained or fine-tuned as part of this prototype.** Model accuracy should not be claimed as an original experimental result unless it is measured using a clearly defined evaluation dataset and methodology.
+The database generation script uses a fixed random seed of **42** to support reproducibility.
+
+To regenerate the database:
+
+```bash
+python generate_large_database.py
+```
+
+Regenerating the database may replace the existing database file.
+
+## Pretrained Model Information
+
+This project integrates the existing Hugging Face model:
+
+`alpecevit/flan-t5-base-text2sql`
+
+According to its model card, the pretrained checkpoint was fine-tuned using SParC, Spider, and CoSQL datasets.
+
+The application supplies the natural-language question and database schema using the following prompt structure:
+
+```text
+transform question and schema to SQL query.
+question: [USER QUESTION]
+schema: [DATABASE SCHEMA]
+```
+
+**Important:** The model was not newly trained or fine-tuned as part of this project. The work focuses on application-level integration, context-aware SQL rule processing, query validation, and database analysis.
+
+## Experimental Evaluation
+
+The evaluation framework contains **60 manually prepared questions**, divided into two partitions:
+
+| Evaluation Partition | Questions |
+|---|---:|
+| Benchmark | 40 |
+| Holdout | 20 |
+| **Total** | **60** |
+
+### Evaluation Results
+
+| Execution Mode | Benchmark (40) | Holdout (20) | Combined (60) |
+|---|---:|---:|---:|
+| Rules Only | 80% | 100% | 86.67% |
+| Model Only | 37.5% | 15% | 30% |
+| Hybrid | 97.5% | 100% | 98.33% |
+
+The holdout partition was prepared within the same project evaluation process. Independent authorship and a formal rule-freezing procedure before holdout question creation were not established. Therefore, it should not be interpreted as a fully independent or blind evaluation.
+
+These results represent the performance on the manually prepared evaluation questions and should not be interpreted as guaranteed performance on arbitrary databases or unseen question distributions.
+
+### Evaluation and Reproducibility Files
+
+- `evaluation.py` – Evaluation implementation.
+- `evaluation_details.csv` – Contains all 60 questions, gold SQL queries, generated SQL queries, and correctness results.
+- `evaluation_summary.csv` – Overall evaluation summary.
+- `evaluation_category_summary.csv` – Category-wise evaluation results.
+- `correction_ablation.csv` – Correction mechanism evaluation results.
+- `security_test_results.csv` – SQL safeguard test results.
+
+The application-level validation ablation did not change measured accuracy on the evaluated question partitions. Validation remains important for checking SQL structure and restricting query execution.
 
 ## Project Structure
 
 ```text
 context-aware-ai-database-analyst/
 │
+├── .devcontainer/
+├── data/
+│   └── large_business.db
+│
 ├── app.py
+├── evaluation.py
+├── generate_large_database.py
 ├── requirements.txt
 ├── README.md
+├── .gitignore
 │
-├── data/
-│   └── business.db
-│
-└── evaluation/
-    └── Evaluation results and reports
+├── evaluation_details.csv
+├── evaluation_summary.csv
+├── evaluation_category_summary.csv
+├── correction_ablation.csv
+└── security_test_results.csv
 ```
-
-*The structure above is illustrative. Update it to match the actual files in the repository.*
 
 ## Installation and Execution
 
@@ -81,13 +154,25 @@ git clone https://github.com/puneethreddy48/context-aware-ai-database-analyst.gi
 cd context-aware-ai-database-analyst
 ```
 
-### 3. Install dependencies
+### 3. Create a virtual environment (recommended)
+
+```bash
+python -m venv .venv
+```
+
+Activate it on Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+### 4. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Run the application
+### 5. Run the application
 
 ```bash
 streamlit run app.py
@@ -95,42 +180,49 @@ streamlit run app.py
 
 The Streamlit dashboard will open in your browser.
 
-## Deployment on Streamlit Community Cloud
+The pretrained model may take additional time to download and load during the first execution.
 
-1. Push the project files to your GitHub repository.
-2. Visit [Streamlit Community Cloud](https://share.streamlit.io/).
-3. Sign in using your GitHub account.
-4. Select the `context-aware-ai-database-analyst` repository.
-5. Choose the `main` branch.
-6. Set `app.py` as the main application file.
-7. Click **Deploy**.
-8. Wait for the application and pretrained model to load.
-9. Test the application using sample natural-language questions.
+## Reproducing the Evaluation
 
-Do not upload API keys, passwords, private databases, or sensitive information.
+Ensure that the dependencies are installed and the database is available at `data/large_business.db`.
+
+Run:
+
+```bash
+python evaluation.py
+```
+
+The evaluation script uses the predefined benchmark and holdout question sets and generates evaluation result files in the project directory.
+
+**Note:** Running the evaluation can overwrite existing evaluation CSV files. Preserve a copy of the published results before rerunning experiments if needed.
 
 ## Limitations
 
-- CPU-based deployment may be slow because the pretrained model must be loaded by the application.
-- Generated SQL queries may be incorrect and should be inspected.
-- The prototype uses SQLite and a small synthetic business dataset.
-- Only SELECT/WITH queries are permitted by the implemented validation logic.
-- This validation is a demonstration safeguard, not a complete production-grade database security boundary.
-- The application provides a basic row and column summary rather than a verified natural-language explanation of every query result.
+- Model inference can be slow on CPU-based systems.
+- Generated SQL queries may be incorrect.
+- The evaluation uses a manually prepared question set and a synthetic SQLite database.
+- The holdout partition is not independently authored or blind.
+- The results do not establish generalization to arbitrary database schemas.
+- Read-only SQL validation is an application-level safeguard, not a complete production-grade database security boundary.
+- Query correction does not necessarily improve measured accuracy.
+- The project currently focuses on SQLite rather than multiple database systems.
 
 ## Future Enhancements
 
-- Improve SQL generation using more context-aware prompting.
-- Support additional database systems.
+- Improve SQL generation using richer schema and database context.
+- Evaluate using independently authored and unseen question sets.
+- Support additional relational database systems.
 - Improve query validation and database security.
-- Expand the dataset and evaluate performance on a clearly defined benchmark.
-- Improve result interpretation and natural-language explanations.
 - Optimize model loading and inference speed.
+- Expand result visualization and natural-language explanations.
+- Explore more advanced SQL correction and verification strategies.
 
-## Project Purpose
+## Project Repository
 
-The objective of this project is to demonstrate how natural-language processing and database technologies can be integrated to make database querying more accessible, while incorporating query validation and a basic self-correction mechanism.
+GitHub: https://github.com/puneethreddy48/context-aware-ai-database-analyst
 
----
+## Academic Project
 
-**Developed as an academic AI/ML project.**
+Developed as an academic AI/ML project.
+
+The project demonstrates how pretrained language models, rule-based SQL generation, database schema inspection, and read-only query validation can be integrated to make database exploration accessible through natural language.
