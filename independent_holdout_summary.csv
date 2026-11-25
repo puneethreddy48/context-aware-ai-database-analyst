@@ -1,0 +1,4 @@
+method,correct,incorrect,total,accuracy_percent
+Rules-only,0,25,25,0.0
+Model-only,2,23,25,8.0
+Hybrid,0,25,25,0.0
