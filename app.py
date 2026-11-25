@@ -1,905 +1,1328 @@
-import tempfile
+
+import os
 import re
+import time
 import sqlite3
+import logging
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
-# ==================================================
-# 1. APP CONFIGURATION
-# ==================================================
-
-st.set_page_config(
-    page_title="Context-Aware AI Database Analyst",
-    page_icon="🤖",
-    layout="wide"
-)
-
-APP_DIR = Path(__file__).parent
-
-# Use a writable temporary directory on Streamlit Cloud
-DATA_DIR = Path(tempfile.gettempdir()) / "context_aware_ai_analyst"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DB_PATH = DATA_DIR / "business.db"
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 MODEL_ID = "alpecevit/flan-t5-base-text2sql"
 
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_DB_PATH = BASE_DIR / "data" / "large_business.db"
+DB_PATH = Path(os.environ.get("CONTEXT_DB_PATH", str(DEFAULT_DB_PATH)))
 
-# ==================================================
-# 2. DATABASE CREATION
-# ==================================================
+MAX_RESULT_ROWS = 1000
+QUERY_TIMEOUT_SECONDS = 8
+MAX_NEW_TOKENS = 256
 
-def create_demo_database():
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
-            customer_id INTEGER PRIMARY KEY,
-            customer_name TEXT,
-            city TEXT,
-            age INTEGER
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            product_id INTEGER PRIMARY KEY,
-            product_name TEXT,
-            category TEXT,
-            price REAL
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id INTEGER PRIMARY KEY,
-            customer_id INTEGER,
-            product_id INTEGER,
-            quantity INTEGER,
-            order_date TEXT
-        )
-    """)
-
-    customer_count = cursor.execute(
-        "SELECT COUNT(*) FROM customers"
-    ).fetchone()[0]
-
-    if customer_count == 0:
-
-        customers = [
-            (1, "Asha", "Bengaluru", 24),
-            (2, "Rahul", "Mysuru", 28),
-            (3, "Meera", "Hyderabad", 25),
-            (4, "Arjun", "Chennai", 30),
-            (5, "Kiran", "Bengaluru", 26),
-            (6, "Divya", "Mysuru", 23)
-        ]
-
-        cursor.executemany(
-            "INSERT INTO customers VALUES (?, ?, ?, ?)",
-            customers
-        )
-
-    product_count = cursor.execute(
-        "SELECT COUNT(*) FROM products"
-    ).fetchone()[0]
-
-    if product_count == 0:
-
-        products = [
-            (1, "Laptop", "Electronics", 55000),
-            (2, "Phone", "Electronics", 25000),
-            (3, "Desk", "Furniture", 8000),
-            (4, "Headphones", "Electronics", 2000),
-            (5, "Office Chair", "Furniture", 6500),
-            (6, "Keyboard", "Accessories", 1500)
-        ]
-
-        cursor.executemany(
-            "INSERT INTO products VALUES (?, ?, ?, ?)",
-            products
-        )
-
-    order_count = cursor.execute(
-        "SELECT COUNT(*) FROM orders"
-    ).fetchone()[0]
-
-    if order_count == 0:
-
-        orders = [
-            (1, 1, 1, 1, "2026-01-01"),
-            (2, 2, 2, 2, "2026-01-02"),
-            (3, 3, 3, 1, "2026-01-03"),
-            (4, 4, 4, 3, "2026-01-04"),
-            (5, 5, 5, 1, "2026-01-05"),
-            (6, 6, 6, 2, "2026-01-06"),
-            (7, 1, 2, 1, "2026-01-07"),
-            (8, 2, 3, 2, "2026-01-08"),
-            (9, 3, 1, 1, "2026-01-09"),
-            (10, 4, 6, 1, "2026-01-10")
-        ]
-
-        cursor.executemany(
-            "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
-            orders
-        )
-
-    conn.commit()
-    conn.close()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-# ==================================================
-# 3. DATABASE SCHEMA EXTRACTION
-# ==================================================
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
+
+def get_connection():
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"Database not found: {DB_PATH}")
+
+    uri = "file:" + quote(str(DB_PATH.resolve())) + "?mode=ro"
+
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=QUERY_TIMEOUT_SECONDS
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={QUERY_TIMEOUT_SECONDS * 1000}")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
 
 def get_schema():
+    conn = get_connection()
+    try:
+        tables = conn.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """).fetchall()
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+        schema = {}
 
-    tables = cursor.execute("""
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table'
-        AND name NOT LIKE 'sqlite_%'
-    """).fetchall()
+        for row in tables:
+            table = row["name"]
+            columns = conn.execute(
+                f'PRAGMA table_info("{table}")'
+            ).fetchall()
 
-    schema = ""
+            schema[table] = [
+                {
+                    "name": col["name"],
+                    "type": col["type"],
+                    "primary_key": bool(col["pk"])
+                }
+                for col in columns
+            ]
 
-    for (table_name,) in tables:
+        return schema
+    finally:
+        conn.close()
 
-        columns = cursor.execute(
-            f"PRAGMA table_info({table_name})"
-        ).fetchall()
 
-        column_names = [
-            f"{column[1]} {column[2]}"
+def get_database_stats():
+    conn = get_connection()
+    try:
+        tables = conn.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """).fetchall()
+
+        return {
+            row["name"]: conn.execute(
+                f'SELECT COUNT(*) FROM "{row["name"]}"'
+            ).fetchone()[0]
+            for row in tables
+        }
+    finally:
+        conn.close()
+
+
+def schema_as_text():
+    lines = []
+
+    for table, columns in get_schema().items():
+        names = ", ".join(
+            f'{column["name"]} ({column["type"]})'
             for column in columns
-        ]
-
-        schema += (
-            f"Table: {table_name}\n"
-            f"Columns: {', '.join(column_names)}\n\n"
         )
+        lines.append(f"{table}({names})")
 
-    conn.close()
-
-    return schema
+    return "\n".join(lines)
 
 
-# ==================================================
-# 4. LOAD PRETRAINED TEXT-TO-SQL MODEL
-# ==================================================
+# ============================================================
+# MODEL
+# ============================================================
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_model():
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID)
+    import torch
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID)
     model.to(device)
     model.eval()
 
     return tokenizer, model, device
 
 
-# ==================================================
-# 5. AI SQL GENERATION
-# ==================================================
+def clean_generated_sql(text):
+    text = str(text).strip()
+    text = re.sub(r"```(?:sql)?", "", text, flags=re.I)
+    text = text.replace("```", "").strip()
 
-def generate_sql(question, schema, tokenizer, model, device):
+    match = re.search(
+        r"\b(SELECT|WITH)\b.*",
+        text,
+        flags=re.I | re.S
+    )
+
+    return match.group(0).strip() if match else text
+
+
+def repair_common_table_names(sql):
+    replacements = {
+        "customer": "customers",
+        "product": "products",
+        "order": "orders"
+    }
+
+    for old, new in replacements.items():
+        sql = re.sub(
+            rf"\b(FROM|JOIN)\s+{old}\b",
+            lambda match: f"{match.group(1)} {new}",
+            sql,
+            flags=re.I
+        )
+
+    return sql
+
+
+def generate_sql(question, tokenizer, model, device):
+    import torch
 
     prompt = f"""
-    You are an expert SQLite query generator.
+Translate the question into one valid SQLite SELECT query.
 
-    Convert the user's question into one valid SQLite SELECT query.
+DATABASE SCHEMA:
+{schema_as_text()}
 
-    DATABASE SCHEMA:
-    {schema}
+TABLES:
+customers(customer_id, customer_name, city, age)
+products(product_id, product_name, category, price)
+orders(order_id, customer_id, product_id, quantity, order_date)
 
-    RULES:
-    - Use exact table and column names.
-    - For showing all records, use SELECT *.
-    - For customers from a city, return all customer columns.
-    - Use appropriate WHERE conditions.
-    - For counting records, use COUNT(*).
-    - Only generate SELECT queries.
-    - Do not explain the SQL.
-    - Return SQL only.
+JOIN RULES:
+customers.customer_id = orders.customer_id
+products.product_id = orders.product_id
 
-    USER QUESTION:
-    {question}
+INSTRUCTIONS:
+- Use only the listed tables and columns.
+- Use plural table names.
+- Use SELECT * when complete records are requested.
+- Use only requested columns for projection questions.
+- Use COUNT for counts, SUM for totals, AVG for averages.
+- Use MIN and MAX for minimum and maximum values.
+- Use GROUP BY for each, every, or per.
+- Use ORDER BY for sorting.
+- Use LIMIT only when requested.
+- Use order_date > 'DATE' for after a date.
+- Use order_date < 'DATE' for before a date.
+- Return one SELECT statement only.
+- Do not explain the query.
+- Do not invent columns or tables.
 
-    SQL:
-    """
+QUESTION:
+{question}
+
+SQL:
+"""
 
     inputs = tokenizer(
         prompt,
         return_tensors="pt",
         truncation=True,
-        max_length=512
-    ).to(device)
+        max_length=1024
+    )
+    inputs = {key: value.to(device) for key, value in inputs.items()}
 
     with torch.no_grad():
-
-        outputs = model.generate(
+        output = model.generate(
             **inputs,
-            max_new_tokens=180,
-            num_beams=4
+            max_new_tokens=MAX_NEW_TOKENS,
+            num_beams=4,
+            early_stopping=True
         )
 
-    return tokenizer.decode(
-        outputs[0],
+    generated = tokenizer.decode(
+        output[0],
         skip_special_tokens=True
-    ).strip()
+    )
+
+    return repair_common_table_names(clean_generated_sql(generated))
 
 
-# ==================================================
-# 6. CONTEXT-AWARE QUESTION HANDLING
-# ==================================================
+# ============================================================
+# QUESTION HELPERS
+# ============================================================
 
-def normalize_question(question):
-
-    question = question.lower().strip()
-    question = re.sub(r"[?!.,]", " ", question)
-    question = re.sub(r"\s+", " ", question)
-
-    return question
+def has_any(text, words):
+    return any(word in text for word in words)
 
 
-def context_aware_query(question):
-
-    q = normalize_question(question)
-
-    city_aliases = {
-        "bengluru": "Bengaluru",
-        "bengalore": "Bengaluru",
-        "banglore": "Bengaluru",
-        "bangalore": "Bengaluru",
+def get_city(question):
+    cities = {
         "bengaluru": "Bengaluru",
-        "mysore": "Mysuru",
+        "bangalore": "Bengaluru",
         "mysuru": "Mysuru",
+        "mysore": "Mysuru",
         "hyderabad": "Hyderabad",
-        "chennai": "Chennai"
+        "chennai": "Chennai",
+        "mumbai": "Mumbai",
+        "delhi": "Delhi",
+        "pune": "Pune",
+        "kolkata": "Kolkata"
     }
 
-    # CUSTOMER QUESTIONS
+    for key, value in cities.items():
+        if re.search(rf"\b{re.escape(key)}\b", question, re.I):
+            return value
+
+    return None
+
+
+def extract_limit(question, default=None):
+    match = re.search(r"\b(\d+)\b", question)
+    return int(match.group(1)) if match else default
+
+
+def make_result(sql, explanation, params=None):
+    result = {
+        "sql": sql.strip(),
+        "explanation": explanation
+    }
+
+    if params is not None:
+        result["params"] = tuple(params)
+
+    return result
+
+
+# ============================================================
+# RULE-BASED SQL GENERATION
+# ============================================================
+
+def context_aware_query(question):
+    q = re.sub(r"\s+", " ", question.lower().strip())
+    city = get_city(q)
+
+    # ----- Revenue and sales -----
+
+    if (
+        has_any(q, ["total sales", "sales amount", "revenue"])
+        and has_any(q, ["category", "each", "per"])
+    ):
+        return make_result("""
+            SELECT p.category,
+                   SUM(p.price * o.quantity) AS total_sales
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.category
+        """, "Calculates total sales amount for each product category.")
+
+    if has_any(q, ["revenue", "total sales", "sales amount"]):
+        return make_result("""
+            SELECT SUM(p.price * o.quantity) AS total_revenue
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+        """, "Calculates total revenue from ordered products.")
+
+    # ----- Aggregation across joins -----
+
+    if (
+        "total quantity" in q
+        and "product" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT p.product_name,
+                   SUM(o.quantity) AS total_quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+            GROUP BY p.product_id, p.product_name
+        """, "Calculates total quantity ordered for each product.")
+
+    if (
+        "total quantity" in q
+        and "city" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT c.city,
+                   SUM(o.quantity) AS total_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.city
+        """, "Calculates total ordered quantity for each city.")
+
+    if (
+        "average" in q and "quantity" in q
+        and "customer" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT c.customer_id,
+                   AVG(o.quantity) AS average_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id
+        """, "Calculates average order quantity for each customer.")
+
+    if (
+        has_any(q, ["count", "number of"])
+        and "order" in q and "product" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT p.product_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.product_id, p.product_name
+        """, "Counts orders for each product.")
+
+    if (
+        has_any(q, ["count", "number of"])
+        and "order" in q and "customer" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT c.customer_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id, c.customer_name
+        """, "Counts orders for each customer.")
+
+    # ----- City aggregation -----
+
+    if (
+        "customer" in q
+        and has_any(q, ["count", "number of"])
+        and has_any(q, ["city", "cities"])
+        and has_any(q, ["each", "every", "per"])
+    ):
+        sql = """
+            SELECT city, COUNT(*) AS total_customers
+            FROM customers
+            GROUP BY city
+        """
+
+        if has_any(q, ["highest first", "descending", "largest first"]):
+            sql += " ORDER BY total_customers DESC"
+
+        return make_result(sql, "Counts customers in each city.")
+
+    if city and has_any(q, ["average age", "avg age"]):
+        return make_result("""
+            SELECT AVG(age) AS average_age
+            FROM customers
+            WHERE LOWER(city) = LOWER(?)
+        """, f"Calculates average customer age in {city}.", (city,))
+
+    # ----- Product category aggregation -----
+
+    if "most expensive" in q and "category" in q:
+        return make_result("""
+            SELECT category, MAX(price) AS maximum_price
+            FROM products
+            GROUP BY category
+        """, "Finds the maximum product price in each category.")
+
+    if (
+        has_any(q, ["count", "number of"])
+        and "product" in q and "category" in q
+        and has_any(q, ["each", "every", "per"])
+    ):
+        return make_result("""
+            SELECT category, COUNT(*) AS total_products
+            FROM products
+            GROUP BY category
+        """, "Counts products in each category.")
+
+    # ----- Customer and product join -----
+
+    if "customer name" in q and "product name" in q:
+        return make_result("""
+            SELECT c.customer_name, p.product_name
+            FROM orders o
+            JOIN customers c ON o.customer_id = c.customer_id
+            JOIN products p ON o.product_id = p.product_id
+        """, "Displays customer and product names for each order.")
+
+    # ----- Customer and order joins -----
+
+    if (
+        "customer" in q and "order" in q
+        and "date" in q
+    ):
+        return make_result("""
+            SELECT c.customer_name, o.order_date
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+        """, "Displays customer names and their order dates.")
+
+    if (
+        "customer" in q and "order" in q
+        and has_any(q, ["order id", "order ids", "orders"])
+    ):
+        return make_result("""
+            SELECT c.customer_name, o.order_id
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+        """, "Displays customer names with their order IDs.")
+
+    # ----- Product and order join -----
+
+    if (
+        "product" in q and "order" in q
+        and has_any(q, ["quantity", "quantities"])
+    ):
+        return make_result("""
+            SELECT p.product_name, o.quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+        """, "Displays product names with their order quantities.")
+
+    # ----- Distinct cities -----
+
+    if has_any(q, [
+        "list the cities", "show the cities",
+        "distinct cities", "unique cities"
+    ]):
+        return make_result(
+            "SELECT DISTINCT city FROM customers",
+            "Lists unique customer cities."
+        )
+
+    # ----- Customer queries -----
 
     if "customer" in q:
+        if city:
+            return make_result("""
+                SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER(?)
+            """, f"Finds customers from {city}.", (city,))
 
-        for alias, city in city_aliases.items():
+        match = re.search(
+            r"age\s+(?:is\s+)?between\s+(\d+)\s+and\s+(\d+)", q
+        )
+        if match:
+            low, high = map(int, match.groups())
+            return make_result(
+                "SELECT * FROM customers WHERE age BETWEEN ? AND ?",
+                f"Finds customers aged between {low} and {high}.",
+                (low, high)
+            )
 
-            if re.search(r"\b" + re.escape(alias) + r"\b", q):
+        match = re.search(
+            r"age\s+(?:is\s+)?(?:exactly|equal to)\s+(\d+)", q
+        )
+        if match:
+            age = int(match.group(1))
+            return make_result(
+                "SELECT * FROM customers WHERE age = ?",
+                f"Finds customers aged exactly {age}.",
+                (age,)
+            )
 
-                return (
-                    "SELECT * FROM customers "
-                    "WHERE LOWER(city) = LOWER(?)",
-                    (city,),
-                    f"Showing customers from {city}."
-                )
+        match = re.search(
+            r"(?:older than|above|over|greater than)\s+(\d+)", q
+        )
+        if match:
+            age = int(match.group(1))
+            return make_result(
+                "SELECT * FROM customers WHERE age > ?",
+                f"Finds customers older than {age}.",
+                (age,)
+            )
 
-        if any(word in q for word in [
-            "how many", "count", "number of", "total"
-        ]):
+        match = re.search(
+            r"(?:younger than|under|below|less than)\s+(\d+)", q
+        )
+        if match:
+            age = int(match.group(1))
+            return make_result(
+                "SELECT * FROM customers WHERE age < ?",
+                f"Finds customers younger than {age}.",
+                (age,)
+            )
 
-            return (
+        if has_any(q, ["highest ages", "highest age", "oldest customers"]):
+            limit = extract_limit(q, 10)
+            return make_result(
+                f"SELECT * FROM customers ORDER BY age DESC LIMIT {limit}",
+                f"Displays the {limit} oldest customers."
+            )
+
+        if has_any(q, ["youngest customers", "lowest ages", "lowest age"]):
+            limit = extract_limit(q, 5)
+            return make_result(
+                f"SELECT * FROM customers ORDER BY age ASC LIMIT {limit}",
+                f"Displays the {limit} youngest customers."
+            )
+
+        if "sorted by age" in q or "sort by age" in q:
+            direction = (
+                "DESC" if has_any(q, ["descending", "high to low"]) else "ASC"
+            )
+            return make_result(
+                f"SELECT * FROM customers ORDER BY age {direction}",
+                f"Sorts customers by age {direction}."
+            )
+
+        if "customer names and cities" in q:
+            return make_result(
+                "SELECT customer_name, city FROM customers",
+                "Displays customer names and cities."
+            )
+
+        if has_any(q, ["how many", "count", "number of customers"]):
+            return make_result(
                 "SELECT COUNT(*) AS total_customers FROM customers",
-                (),
-                "Here is the total number of customers."
+                "Counts customers."
             )
 
-        if any(word in q for word in [
-            "show", "display", "list", "all"
+        if has_any(q, [
+            "show all", "all customers", "list all",
+            "display all", "find customers"
         ]):
-
-            return (
+            return make_result(
                 "SELECT * FROM customers",
-                (),
-                "Showing all customer records."
+                "Displays customer records."
             )
 
-    # PRODUCT QUESTIONS
+    # ----- Product queries -----
 
     if "product" in q:
+        match = re.search(
+            r"between\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", q
+        )
+        if match and has_any(q, ["price", "priced", "cost"]):
+            low, high = map(float, match.groups())
+            return make_result(
+                "SELECT * FROM products WHERE price BETWEEN ? AND ?",
+                f"Finds products priced between {low:g} and {high:g}.",
+                (low, high)
+            )
 
-        if any(word in q for word in [
-            "how many", "count", "number of", "total"
+        if has_any(q, [
+            "most expensive", "highest price",
+            "highest priced", "costliest"
         ]):
+            limit = extract_limit(q)
+            if limit is not None:
+                return make_result(
+                    f"SELECT * FROM products ORDER BY price DESC LIMIT {limit}",
+                    f"Finds the {limit} most expensive products."
+                )
 
-            return (
+        if has_any(q, [
+            "lowest prices", "lowest price",
+            "cheapest products", "least expensive products"
+        ]):
+            limit = extract_limit(q, 10)
+            return make_result(
+                f"SELECT * FROM products ORDER BY price ASC LIMIT {limit}",
+                f"Finds the {limit} lowest-priced products."
+            )
+
+        if "sorted by price" in q or "sort by price" in q:
+            direction = (
+                "DESC" if has_any(q, ["descending", "high to low"]) else "ASC"
+            )
+            return make_result(
+                f"SELECT * FROM products ORDER BY price {direction}",
+                f"Sorts products by price {direction}."
+            )
+
+        category_match = re.search(
+            r"\b(?:in|under|within)\s+the\s+([a-z ]+?)\s+category\b", q
+        )
+        if category_match:
+            category = category_match.group(1).strip().title()
+            return make_result(
+                "SELECT * FROM products WHERE LOWER(category) = LOWER(?)",
+                f"Finds products in the {category} category.",
+                (category,)
+            )
+
+        if "electronics" in q:
+            return make_result(
+                "SELECT * FROM products WHERE category = ?",
+                "Finds Electronics products.",
+                ("Electronics",)
+            )
+
+        if "furniture" in q:
+            return make_result(
+                "SELECT * FROM products WHERE category = ?",
+                "Finds Furniture products.",
+                ("Furniture",)
+            )
+
+        match = re.search(
+            r"(?:more than|greater than|above|over|costing more than)\s+(\d+(?:\.\d+)?)",
+            q
+        )
+        if match:
+            price = float(match.group(1))
+            return make_result(
+                "SELECT * FROM products WHERE price > ?",
+                "Finds products above the specified price.",
+                (price,)
+            )
+
+        match = re.search(
+            r"(?:less than|below|under|costing less than)\s+(\d+(?:\.\d+)?)",
+            q
+        )
+        if match:
+            price = float(match.group(1))
+            return make_result(
+                "SELECT * FROM products WHERE price < ?",
+                "Finds products below the specified price.",
+                (price,)
+            )
+
+        if "product names and prices" in q:
+            return make_result(
+                "SELECT product_name, price FROM products",
+                "Displays product names and prices."
+            )
+
+        if "cheapest product" in q or "least expensive product" in q:
+            return make_result("""
+                SELECT *
+                FROM products
+                ORDER BY price ASC
+                LIMIT 1
+            """, "Finds the cheapest product.")
+
+        if has_any(q, ["how many", "count", "number of products"]):
+            return make_result(
                 "SELECT COUNT(*) AS total_products FROM products",
-                (),
-                "Here is the total number of products."
+                "Counts products."
             )
 
-        if any(word in q for word in [
-            "show", "list", "display", "all"
+        if has_any(q, [
+            "show all", "all products", "list all",
+            "display all", "find products"
         ]):
-
-            return (
+            return make_result(
                 "SELECT * FROM products",
-                (),
-                "Showing all products."
+                "Displays product records."
             )
 
-    # ORDER QUESTIONS
+    # ----- Order queries -----
 
     if "order" in q:
+        date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", q)
+        if date_match:
+            date_value = date_match.group(1)
 
-        if any(word in q for word in [
-            "how many", "count", "number of", "total"
-        ]):
+            if re.search(r"\bafter\b", q):
+                operator, phrase = ">", "after"
+            elif re.search(r"\bbefore\b", q):
+                operator, phrase = "<", "before"
+            else:
+                operator, phrase = "=", "on"
 
-            return (
-                "SELECT COUNT(*) AS total_orders FROM orders",
-                (),
-                "Here is the total number of orders."
+            return make_result(
+                f"SELECT * FROM orders WHERE order_date {operator} ?",
+                f"Finds orders placed {phrase} {date_value}.",
+                (date_value,)
             )
 
-        if any(word in q for word in [
-            "show", "list", "display", "all"
-        ]):
+        match = re.search(
+            r"quantity\s+(?:is\s+)?between\s+(\d+)\s+and\s+(\d+)", q
+        )
+        if match:
+            low, high = map(int, match.groups())
+            return make_result(
+                "SELECT * FROM orders WHERE quantity BETWEEN ? AND ?",
+                f"Finds orders with quantity between {low} and {high}.",
+                (low, high)
+            )
 
-            return (
+        match = re.search(
+            r"quantity\s+(?:is\s+)?(greater than|more than|above|over|less than|below|under|equal to|equals?)\s+(\d+)",
+            q
+        )
+        if match:
+            phrase, number = match.groups()
+            operators = {
+                "greater than": ">", "more than": ">", "above": ">", "over": ">",
+                "less than": "<", "below": "<", "under": "<",
+                "equal to": "=", "equal": "=", "equals": "="
+            }
+            operator = operators[phrase]
+            number = int(number)
+
+            return make_result(
+                f"SELECT * FROM orders WHERE quantity {operator} ?",
+                f"Filters orders by quantity {phrase} {number}.",
+                (number,)
+            )
+
+        if has_any(q, ["most recent", "recent orders"]):
+            limit = extract_limit(q, 10)
+            return make_result(
+                f"SELECT * FROM orders ORDER BY order_date DESC LIMIT {limit}",
+                f"Displays the {limit} most recent orders."
+            )
+
+        if "sorted by date" in q or "sort by date" in q:
+            direction = (
+                "DESC" if has_any(q, ["descending", "newest first"]) else "ASC"
+            )
+            return make_result(
+                f"SELECT * FROM orders ORDER BY order_date {direction}",
+                f"Sorts orders by date {direction}."
+            )
+
+        if has_any(q, ["how many", "count", "number of orders"]):
+            return make_result(
+                "SELECT COUNT(*) AS total_orders FROM orders",
+                "Counts orders."
+            )
+
+        if has_any(q, ["show all", "all orders", "list all", "display all"]):
+            return make_result(
                 "SELECT * FROM orders",
-                (),
-                "Showing all orders."
+                "Displays order records."
             )
 
     return None
 
 
-# ==================================================
-# 7. READ-ONLY SQL VALIDATION
-# ==================================================
+# ============================================================
+# SQL VALIDATION
+# ============================================================
 
-def validate_read_only(sql):
-
-    cleaned = sql.strip().rstrip(";").strip()
-
-    if not cleaned:
-        raise ValueError("Empty SQL query generated.")
-
-    if not re.match(r"^(SELECT|WITH)\b", cleaned, re.I):
-        raise ValueError("Only SELECT queries are permitted.")
-
-    if ";" in cleaned:
-        raise ValueError("Multiple SQL statements are not allowed.")
-
-    return cleaned
+FORBIDDEN_KEYWORDS = {
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+    "REPLACE", "ATTACH", "DETACH", "VACUUM", "REINDEX", "PRAGMA"
+}
 
 
-# ==================================================
-# 8. SAFE SQL EXECUTION
-# ==================================================
-
-def execute_sql(sql, parameters=()):
-
-    safe_sql = validate_read_only(sql)
-
-    conn = sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro",
-        uri=True
+def remove_sql_string_literals(sql):
+    return re.sub(
+        r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"",
+        " ",
+        sql
     )
 
+
+def validate_sql(sql):
+    if not isinstance(sql, str) or not sql.strip():
+        return False, "Empty SQL query."
+
+    cleaned = sql.strip().rstrip(";").strip()
+    if not cleaned:
+        return False, "Empty SQL query."
+
+    without_strings = remove_sql_string_literals(cleaned)
+
+    if ";" in without_strings:
+        return False, "Multiple SQL statements are not allowed."
+
+    if not re.match(r"^(SELECT|WITH)\b", cleaned, re.I):
+        return False, "Only SELECT queries are allowed."
+
+    if re.search(r"--|/\*|\*/", without_strings):
+        return False, "SQL comments are not allowed."
+
+    for keyword in FORBIDDEN_KEYWORDS:
+        if re.search(rf"\b{keyword}\b", without_strings, re.I):
+            return False, f"Forbidden SQL keyword: {keyword}"
+
+    return True, "SQL validation successful."
+
+
+def sqlite_authorizer(action, arg1, arg2, database, source):
+    allowed = {
+        sqlite3.SQLITE_SELECT,
+        sqlite3.SQLITE_READ,
+        sqlite3.SQLITE_FUNCTION
+    }
+
+    if hasattr(sqlite3, "SQLITE_RECURSIVE"):
+        allowed.add(sqlite3.SQLITE_RECURSIVE)
+
+    return (
+        sqlite3.SQLITE_OK
+        if action in allowed
+        else sqlite3.SQLITE_DENY
+    )
+
+
+# ============================================================
+# SQL EXECUTION
+# ============================================================
+
+def execute_sql(sql, params=None, use_validation=True):
+    if use_validation:
+        valid, message = validate_sql(sql)
+        if not valid:
+            raise ValueError(message)
+
+    conn = get_connection()
+
     try:
+        conn.set_authorizer(sqlite_authorizer)
+        start_time = time.monotonic()
 
-        def authorizer(action, arg1, arg2, database, trigger):
-
-            denied_actions = {
-                sqlite3.SQLITE_INSERT,
-                sqlite3.SQLITE_UPDATE,
-                sqlite3.SQLITE_DELETE,
-                sqlite3.SQLITE_CREATE_TABLE,
-                sqlite3.SQLITE_DROP_TABLE,
-                sqlite3.SQLITE_ALTER_TABLE,
-                sqlite3.SQLITE_ATTACH,
-                sqlite3.SQLITE_DETACH
-            }
-
-            if action in denied_actions:
-                return sqlite3.SQLITE_DENY
-
-            return sqlite3.SQLITE_OK
-
-        conn.set_authorizer(authorizer)
-
-        result = pd.read_sql_query(
-            safe_sql,
-            conn,
-            params=parameters
+        conn.set_progress_handler(
+            lambda: int(
+                time.monotonic() - start_time > QUERY_TIMEOUT_SECONDS
+            ),
+            1000
         )
 
-        return result
+        cursor = conn.execute(sql, params or ())
+
+        if cursor.description is None:
+            raise ValueError("Query did not return a result set.")
+
+        columns = [item[0] for item in cursor.description]
+        rows = cursor.fetchmany(MAX_RESULT_ROWS + 1)
+
+        truncated = len(rows) > MAX_RESULT_ROWS
+        rows = rows[:MAX_RESULT_ROWS]
+
+        dataframe = pd.DataFrame(
+            [tuple(row) for row in rows],
+            columns=columns
+        )
+
+        return dataframe, truncated
 
     finally:
         conn.close()
 
 
-# ==================================================
-# 9. AI QUERY RETRY
-# ==================================================
+# ============================================================
+# SQL CORRECTION
+# ============================================================
 
-def run_ai_query(question, schema, tokenizer, model, device):
+def correct_sql(
+    question,
+    incorrect_sql,
+    error_message,
+    tokenizer,
+    model,
+    device
+):
+    import torch
 
-    sql = generate_sql(
-        question, schema, tokenizer, model, device
+    prompt = f"""
+Fix the SQLite query using this exact schema.
+
+SCHEMA:
+{schema_as_text()}
+
+QUESTION:
+{question}
+
+INCORRECT SQL:
+{incorrect_sql}
+
+ERROR:
+{error_message}
+
+Rules:
+- Use only existing tables and columns.
+- Return one SELECT statement only.
+- Return SQL only.
+- Do not include explanations.
+
+CORRECTED SQL:
+"""
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=1024
     )
+    inputs = {key: value.to(device) for key, value in inputs.items()}
 
-    for attempt in range(2):
-
-        try:
-
-            result = execute_sql(sql)
-
-            return sql, result, None
-
-        except Exception as error:
-
-            if attempt == 0:
-
-                correction_prompt = f"""
-                Correct this SQLite SELECT query.
-
-                Schema:
-                {schema}
-
-                Question:
-                {question}
-
-                Incorrect SQL:
-                {sql}
-
-                Error:
-                {error}
-
-                Return only one valid SELECT query.
-                """
-
-                inputs = tokenizer(
-                    correction_prompt,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=512
-                ).to(device)
-
-                with torch.no_grad():
-
-                    outputs = model.generate(
-                        **inputs,
-                        max_new_tokens=180,
-                        num_beams=4
-                    )
-
-                sql = tokenizer.decode(
-                    outputs[0],
-                    skip_special_tokens=True
-                ).strip()
-
-            else:
-
-                return sql, None, str(error)
-
-    return sql, None, "Query could not be executed."
-
-
-# ==================================================
-# 10. ANSWER DISPLAY
-# ==================================================
-
-def display_answer(result, explanation):
-
-    if result.empty:
-
-        st.warning(
-            "The query executed successfully, but no matching records were found."
+    with torch.no_grad():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=MAX_NEW_TOKENS,
+            num_beams=4
         )
 
+    generated = tokenizer.decode(output[0], skip_special_tokens=True)
+    return repair_common_table_names(clean_generated_sql(generated))
+
+
+def execute_with_optional_correction(
+    question,
+    sql,
+    params=None,
+    tokenizer=None,
+    model=None,
+    device=None,
+    use_validation=True,
+    allow_correction=True
+):
+    try:
+        dataframe, truncated = execute_sql(
+            sql,
+            params=params,
+            use_validation=use_validation
+        )
+        return sql, dataframe, truncated, False
+
+    except Exception as first_error:
+        if not allow_correction or tokenizer is None or model is None:
+            raise
+
+        corrected_sql = correct_sql(
+            question,
+            sql,
+            str(first_error),
+            tokenizer,
+            model,
+            device
+        )
+
+        # Corrected SQL is always checked before execution.
+        dataframe, truncated = execute_sql(
+            corrected_sql,
+            params=None,
+            use_validation=True
+        )
+
+        return corrected_sql, dataframe, truncated, True
+
+
+# ============================================================
+# MAIN QUERY PIPELINE
+# ============================================================
+
+def run_ai_query(
+    question,
+    mode="Hybrid",
+    tokenizer=None,
+    model=None,
+    device=None,
+    use_validation=True,
+    allow_correction=True
+):
+    rule = context_aware_query(question)
+    params = rule.get("params") if rule else None
+
+    if mode == "Rules only":
+        if rule is None:
+            raise ValueError("No matching rule found.")
+
+        sql, df, truncated, corrected = execute_with_optional_correction(
+            question, rule["sql"], params,
+            tokenizer, model, device,
+            use_validation, False
+        )
+
+        return {
+            "sql": sql,
+            "dataframe": df,
+            "method": "Rules",
+            "explanation": rule["explanation"],
+            "correction_used": corrected,
+            "truncated": truncated
+        }
+
+    if mode == "Model only":
+        if tokenizer is None or model is None:
+            tokenizer, model, device = load_model()
+
+        sql = generate_sql(question, tokenizer, model, device)
+        sql, df, truncated, corrected = execute_with_optional_correction(
+            question, sql, None,
+            tokenizer, model, device,
+            use_validation, allow_correction
+        )
+
+        return {
+            "sql": sql,
+            "dataframe": df,
+            "method": "FLAN-T5",
+            "explanation": "SQL generated by FLAN-T5.",
+            "correction_used": corrected,
+            "truncated": truncated
+        }
+
+    if mode == "Hybrid":
+        if rule is not None:
+            try:
+                sql, df, truncated, _ = execute_with_optional_correction(
+                    question, rule["sql"], params,
+                    tokenizer, model, device,
+                    use_validation, False
+                )
+
+                return {
+                    "sql": sql,
+                    "dataframe": df,
+                    "method": "Rules",
+                    "explanation": rule["explanation"],
+                    "correction_used": False,
+                    "truncated": truncated
+                }
+
+            except Exception as error:
+                logger.warning("Rule execution failed: %s", error)
+
+        if tokenizer is None or model is None:
+            tokenizer, model, device = load_model()
+
+        sql = generate_sql(question, tokenizer, model, device)
+        sql, df, truncated, corrected = execute_with_optional_correction(
+            question, sql, None,
+            tokenizer, model, device,
+            use_validation, allow_correction
+        )
+
+        return {
+            "sql": sql,
+            "dataframe": df,
+            "method": "FLAN-T5 fallback",
+            "explanation": "The model was used because no usable rule matched.",
+            "correction_used": corrected,
+            "truncated": truncated
+        }
+
+    raise ValueError(f"Unknown execution mode: {mode}")
+
+
+# ============================================================
+# EVALUATION COMPATIBILITY
+# ============================================================
+
+def sql_literal(value):
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    raise TypeError(f"Unsupported parameter type: {type(value).__name__}")
+
+
+def generate_rule_sql(question):
+    rule = context_aware_query(question)
+    if rule is None:
+        return None
+
+    sql = rule["sql"]
+    for value in rule.get("params", ()):
+        if "?" not in sql:
+            raise ValueError("Missing SQL parameter placeholder.")
+        sql = sql.replace("?", sql_literal(value), 1)
+
+    if "?" in sql:
+        raise ValueError("Unfilled SQL parameter placeholder.")
+
+    return sql
+
+
+def generate_model_sql(question, tokenizer, model, device):
+    return generate_sql(question, tokenizer, model, device)
+
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+def show_visualization(dataframe):
+    if dataframe.empty or len(dataframe.columns) < 2:
         return
 
-    st.subheader("🤖 AI Analyst Answer")
+    numeric = dataframe.select_dtypes(include="number").columns.tolist()
+    text_columns = [
+        column for column in dataframe.columns
+        if column not in numeric
+    ]
 
-    st.success(explanation)
+    if not numeric or not text_columns:
+        return
 
-    if result.shape == (1, 1):
+    st.subheader("Data Visualization")
 
-        value = result.iloc[0, 0]
-        column = result.columns[0]
+    chart_type = st.selectbox("Chart type", ["Bar chart", "Line chart"])
+    x_column = st.selectbox("Category", text_columns)
+    y_column = st.selectbox("Numerical value", numeric)
 
-        st.metric(
-            label=column.replace("_", " ").title(),
-            value=value
-        )
+    chart_data = dataframe[[x_column, y_column]].dropna()
+    if chart_data.empty:
+        st.info("No data available for this chart.")
+        return
 
-    elif len(result) == 1:
+    chart_data = chart_data.set_index(x_column)
 
-        st.write("Here is the matching record.")
-
+    if chart_type == "Bar chart":
+        st.bar_chart(chart_data[y_column])
     else:
-
-        st.write(f"Found {len(result)} matching records.")
-
-    st.subheader("📊 Query Results")
-
-    st.dataframe(
-        result,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.caption(
-        f"{len(result)} row(s) and "
-        f"{len(result.columns)} column(s) returned."
-    )
+        st.line_chart(chart_data[y_column])
 
 
-# ==================================================
-# 11. MAIN DASHBOARD
-# ==================================================
+# ============================================================
+# STREAMLIT APPLICATION
+# ============================================================
 
 def main():
+    st.set_page_config(
+        page_title="Context-Aware AI Database Analyst",
+        page_icon="🧠",
+        layout="wide"
+    )
 
-    st.title("🤖 Context-Aware AI Database Analyst")
+    st.title("🧠 Context-Aware AI Database Analyst")
+    st.write(
+        "Ask questions about your database in natural language. "
+        "The system generates SQL and displays the results."
+    )
 
-    st.markdown("""
-    Ask questions about your business database in natural language.
+    try:
+        stats = get_database_stats()
+        st.sidebar.header("Database Information")
+        st.sidebar.success("Database connected")
+        st.sidebar.write(f"Database: {DB_PATH.name}")
+        st.sidebar.metric("Total records", f"{sum(stats.values()):,}")
 
-    The system uses a pretrained Text-to-SQL model,
-    database schema context, and context-aware handling
-    for common business questions.
-    """)
+        for table, count in stats.items():
+            st.sidebar.write(f"**{table}:** {count:,} records")
 
-    create_demo_database()
+    except Exception as error:
+        st.error(f"Database connection failed: {error}")
+        st.stop()
 
-    # Display business analytics and visualizations
-    show_data_visualizations()
+    with st.expander("View Database Schema"):
+        for table, columns in get_schema().items():
+            st.markdown(f"**Table: {table}**")
+            st.dataframe(
+                pd.DataFrame(columns),
+                use_container_width=True,
+                hide_index=True
+            )
 
-    schema = get_schema()
+    mode = st.sidebar.selectbox(
+        "Execution method",
+        ["Hybrid", "Rules only", "Model only"]
+    )
 
-    with st.sidebar:
-
-        st.header("Database Context")
-
-        st.success("SQLite database connected")
-
-        st.write("Available tables:")
-
-        st.code("customers\nproducts\norders")
-
-        st.divider()
-
-        st.subheader("AI Model")
-
-        st.write(MODEL_ID)
-
-        st.caption(
-            "Pretrained Text-to-SQL model. "
-            "This project does not train the model from scratch."
-        )
-
-        with st.expander("View database schema"):
-            st.code(schema)
-
-    st.subheader("Ask Your Database")
+    st.sidebar.caption(
+        "Hybrid tries rules first and uses FLAN-T5 when no usable rule matches."
+    )
+    st.sidebar.divider()
+    st.sidebar.write(f"Model: `{MODEL_ID}`")
+    st.sidebar.write("Database: SQLite")
+    st.sidebar.write("Query type: Read-only")
 
     examples = [
         "Show all customers",
-        "Show customers from Bengaluru",
-        "Show customers from Mysuru",
-        "How many customers are there?",
         "Show all products",
-        "How many products are available?",
         "Show all orders",
-        "What is the total number of orders?"
+        "Show customer names and cities",
+        "Find customers from Bengaluru",
+        "Find customers older than 40",
+        "Find customers younger than 30",
+        "Find customers whose age is between 30 and 50",
+        "Find customers whose age is exactly 25",
+        "Find the average customer age",
+        "Find the average age of customers in Bengaluru",
+        "List the cities where customers live",
+        "Find the number of customers in each city, highest first",
+        "Find products costing more than 10000",
+        "Find products costing less than 5000",
+        "Find products priced between 1000 and 10000",
+        "Show the top 5 most expensive products",
+        "Show the 10 products with the lowest prices",
+        "Find the most expensive product in each category",
+        "Find orders with quantity greater than 5",
+        "Find orders with quantity equal to 4",
+        "Find orders placed after 2025-06-01",
+        "Show the 10 most recent orders",
+        "Show customer names with their orders",
+        "Show customer names and their order dates",
+        "Show product names with their order quantities",
+        "Find the total quantity ordered for each product",
+        "Count the number of orders for each customer",
+        "Find the average order quantity for each customer",
+        "Find the total quantity ordered in each city",
+        "Find the total sales amount for each product category",
+        "Calculate the total revenue from all products ordered"
     ]
+
+    st.subheader("Ask Your Database")
 
     selected = st.selectbox(
         "Try an example question",
-        ["Choose a question"] + examples
+        ["Choose an example"] + examples
     )
 
-    question = st.text_input(
-        "Enter your question",
-        value="" if selected == "Choose a question" else selected,
-        placeholder="Example: Show customers from Bengaluru"
+    question = st.text_area(
+        "Enter your natural language question",
+        value=selected if selected != "Choose an example" else "",
+        placeholder="Example: Count customers in each city"
     )
 
-    if st.button("Generate SQL and Analyze", type="primary"):
-
+    if st.button("Run Query", type="primary", use_container_width=True):
         if not question.strip():
-
             st.warning("Please enter a question.")
             return
 
+        tokenizer = model = device = None
+
+        if mode == "Model only":
+            try:
+                with st.spinner("Loading FLAN-T5 model..."):
+                    tokenizer, model, device = load_model()
+                st.success(f"Model loaded on {device.upper()}.")
+            except Exception as error:
+                st.error(f"Model loading failed: {error}")
+                return
+
         try:
+            with st.spinner("Processing your question..."):
+                result = run_ai_query(
+                    question,
+                    mode,
+                    tokenizer,
+                    model,
+                    device
+                )
 
-            with st.spinner("Understanding your question..."):
+            st.success("Query executed successfully.")
 
-                rule_result = context_aware_query(question)
-
-                if rule_result is not None:
-
-                    sql, parameters, explanation = rule_result
-
-                    result = execute_sql(sql, parameters)
-
-                    explanation = generate_natural_language_explanation(
-                        question,
-                        result
-                    )
-
-                    source = "Context-aware query handling"
-
-                else:
-
-                    with st.spinner(
-                        "Loading AI model and generating SQL..."
-                    ):
-
-                        tokenizer, model, device = load_model()
-
-                        sql, result, error = run_ai_query(
-                            question,
-                            schema,
-                            tokenizer,
-                            model,
-                            device
-                        )
-
-                    if error:
-
-                        st.subheader("Generated SQL")
-                        st.code(sql, language="sql")
-
-                        st.error(
-                            f"Could not execute the generated query: {error}"
-                        )
-                        return
-
-                    explanation = generate_natural_language_explanation(
-                        question,
-                        result
-                    )
-
-                    source = "Pretrained Text-to-SQL model"
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Execution method", result["method"])
+            col2.metric("Returned rows", len(result["dataframe"]))
+            col3.metric(
+                "Correction used",
+                "Yes" if result["correction_used"] else "No"
+            )
 
             st.subheader("Generated SQL")
+            st.code(result["sql"], language="sql")
 
-            st.code(sql, language="sql")
+            st.subheader("Explanation")
+            st.write(result["explanation"])
 
-            st.caption(f"Query method: {source}")
+            st.subheader("Query Results")
+            st.dataframe(
+                result["dataframe"],
+                use_container_width=True,
+                hide_index=True
+            )
 
-            st.success("SQL executed successfully!")
+            if result["truncated"]:
+                st.warning(
+                    f"Only the first {MAX_RESULT_ROWS} rows are displayed."
+                )
 
-            display_answer(result, explanation)
+            show_visualization(result["dataframe"])
+
+            csv_data = result["dataframe"].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download Results as CSV",
+                data=csv_data,
+                file_name="query_results.csv",
+                mime="text/csv"
+            )
 
         except Exception as error:
+            import traceback
+            st.error(f"Query execution failed: {error}")
+            with st.expander("Technical error details"):
+                st.code(traceback.format_exc())
 
-            st.error(f"Application error: {error}")
-
-
-# ==================================================
-# 12. RUN APPLICATION
-# ==================================================
-
-
-
-
-def show_data_visualizations():
-    st.header("📊 Data Visualization & Analytics")
-
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-
-        customers = pd.read_sql_query(
-            "SELECT * FROM customers", conn
-        )
-
-        products = pd.read_sql_query(
-            "SELECT * FROM products", conn
-        )
-
-        orders = pd.read_sql_query(
-            "SELECT * FROM orders", conn
-        )
-
-        conn.close()
-
-        # Summary metrics
-        st.subheader("Business Overview")
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Customers", len(customers))
-        c2.metric("Total Products", len(products))
-        c3.metric("Total Orders", len(orders))
-
-        # Customer analysis
-        st.subheader("1. Customer Analysis")
-
-        if not customers.empty:
-            city_data = (
-                customers.groupby("city")
-                .size()
-                .reset_index(name="Customers")
-            )
-
-            st.write("Customer distribution by city")
-            st.bar_chart(city_data.set_index("city"))
-
-            age_data = (
-                customers.groupby("age")
-                .size()
-                .reset_index(name="Customers")
-            )
-
-            st.write("Customer age distribution")
-            st.bar_chart(age_data.set_index("age"))
-
-        # Product analysis
-        st.subheader("2. Product Analysis")
-
-        if not products.empty:
-            category_data = (
-                products.groupby("category")
-                .size()
-                .reset_index(name="Products")
-            )
-
-            st.write("Products by category")
-            st.bar_chart(category_data.set_index("category"))
-
-            st.write("Product prices")
-            st.bar_chart(
-                products.set_index("product_name")["price"]
-            )
-
-        # Order analysis
-        st.subheader("3. Order Analysis")
-
-        if not orders.empty:
-            orders["order_date"] = pd.to_datetime(
-                orders["order_date"], errors="coerce"
-            )
-
-            orders_by_date = (
-                orders.dropna(subset=["order_date"])
-                .groupby("order_date")
-                .size()
-                .reset_index(name="Orders")
-                .sort_values("order_date")
-            )
-
-            if not orders_by_date.empty:
-                st.write("Orders over time")
-                st.line_chart(
-                    orders_by_date.set_index("order_date")
-                )
-
-            product_orders = orders.merge(
-                products[["product_id", "product_name"]],
-                on="product_id",
-                how="left"
-            )
-
-            product_quantity = (
-                product_orders.groupby("product_name")["quantity"]
-                .sum()
-                .sort_values(ascending=False)
-            )
-
-            st.write("Quantity ordered by product")
-            st.bar_chart(product_quantity)
-
-        st.success("Analytics loaded successfully!")
-
-    except Exception as e:
-        st.error(f"Unable to load analytics: {e}")
-
-
-
-def generate_natural_language_explanation(question, result):
-
-    if result is None:
-        return "The query could not be completed."
-
-    if result.empty:
-        return f"No matching records were found for: {question}"
-
-    row_count = len(result)
-    columns = {col.lower(): col for col in result.columns}
-
-    # Single-value results, such as COUNT(*)
-    if result.shape == (1, 1):
-        value = result.iloc[0, 0]
-        column = result.columns[0].replace("_", " ").lower()
-
-        if any(word in question.lower() for word in
-               ["how many", "count", "number of", "total"]):
-            return (
-                f"The database query found {value} as the "
-                f"total {column.replace('total ', '')}. "
-                f"This value is calculated directly from the database."
-            )
-
-        return f"The result for {column} is {value}."
-
-    # General summary
-    explanation = (
-        f"Your query returned {row_count} records from the database."
-    )
-
-    # Order analysis
-    if "order_id" in columns:
-
-        if "customer_id" in columns:
-            unique_customers = result[columns["customer_id"]].nunique()
-            explanation += (
-                f" These orders involve {unique_customers} unique customers."
-            )
-
-        if "product_id" in columns:
-            unique_products = result[columns["product_id"]].nunique()
-            explanation += (
-                f" They include {unique_products} unique products."
-            )
-
-        if "quantity" in columns:
-            total_quantity = result[columns["quantity"]].sum()
-            explanation += (
-                f" The total quantity ordered is {total_quantity} units."
-            )
-
-        if "order_date" in columns:
-            dates = pd.to_datetime(
-                result[columns["order_date"]], errors="coerce"
-            ).dropna()
-
-            if not dates.empty:
-                explanation += (
-                    f" The orders cover the period from "
-                    f"{dates.min().strftime('%d %b %Y')} to "
-                    f"{dates.max().strftime('%d %b %Y')}."
-                )
-
-    # Customer analysis
-    elif "customer_id" in columns or "customer_name" in columns:
-
-        if "city" in columns:
-            city_count = result[columns["city"]].nunique()
-            explanation += (
-                f" The records cover {city_count} different cities."
-            )
-
-    # Product analysis
-    elif "product_id" in columns or "product_name" in columns:
-
-        if "price" in columns:
-            prices = pd.to_numeric(
-                result[columns["price"]], errors="coerce"
-            ).dropna()
-
-            if not prices.empty:
-                explanation += (
-                    f" Product prices range from "
-                    f"{prices.min():,.2f} to {prices.max():,.2f}."
-                )
-
-    explanation += (
-        f" The result contains {len(result.columns)} columns: "
-        f"{', '.join(result.columns)}."
-    )
-
-    return explanation
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,11 @@
+attack,sql,validation_passed,validation_message,blocked_with_validation,blocked_without_validation,security_test_passed,execution_message,authorizer_message
+DELETE attack,DELETE FROM orders,False,Only SELECT queries are allowed.,True,True,True,Only SELECT queries are allowed.,not authorized
+DROP attack,DROP TABLE customers,False,Only SELECT queries are allowed.,True,True,True,Only SELECT queries are allowed.,not authorized
+UPDATE attack,UPDATE customers SET city='Test',False,Only SELECT queries are allowed.,True,True,True,Only SELECT queries are allowed.,not authorized
+INSERT attack,INSERT INTO customers(customer_name) VALUES('Test'),False,Only SELECT queries are allowed.,True,True,True,Only SELECT queries are allowed.,not authorized
+Multiple statements,SELECT * FROM customers; DROP TABLE customers,False,Multiple SQL statements are not allowed.,True,True,True,Multiple SQL statements are not allowed.,You can only execute one statement at a time.
+Line comment injection,"SELECT * FROM customers; -- hidden command
+DROP TABLE customers",False,Multiple SQL statements are not allowed.,True,True,True,Multiple SQL statements are not allowed.,You can only execute one statement at a time.
+Block comment injection,SELECT * FROM customers /* hidden command */; DROP TABLE customers,False,Multiple SQL statements are not allowed.,True,True,True,Multiple SQL statements are not allowed.,You can only execute one statement at a time.
+PRAGMA attack,PRAGMA table_info(customers),False,Only SELECT queries are allowed.,True,True,True,Only SELECT queries are allowed.,not authorized
+Database integrity check,Check required tables after security tests,True,Integrity check,True,True,True,True,"{'customers': 5000, 'orders': 20000, 'products': 500}"

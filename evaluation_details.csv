@@ -1,0 +1,200 @@
+split,category,question,gold_sql,rule_sql,model_sql,hybrid_sql,validation_passed,validation_message,rules_only_correct,model_only_correct,hybrid_correct,validation_on_correct,validation_off_correct
+benchmark,selection,Show all customers.,SELECT * FROM customers,SELECT * FROM customers,SELECT * FROM customers,SELECT * FROM customers,True,SQL validation successful.,True,True,True,True,True
+benchmark,selection,Show all products.,SELECT * FROM products,SELECT * FROM products,SELECT * FROM products,SELECT * FROM products,True,SQL validation successful.,True,True,True,True,True
+benchmark,selection,Show all orders.,SELECT * FROM orders,SELECT * FROM orders,SELECT * FROM orders,SELECT * FROM orders,True,SQL validation successful.,True,True,True,True,True
+benchmark,projection,Show customer names and cities.,"SELECT customer_name, city FROM customers","SELECT customer_name, city FROM customers","SELECT customer_name, city FROM customers","SELECT customer_name, city FROM customers",True,SQL validation successful.,True,True,True,True,True
+benchmark,projection,Show product names and prices.,"SELECT product_name, price FROM products","SELECT product_name, price FROM products","SELECT product_name, price FROM products","SELECT product_name, price FROM products",True,SQL validation successful.,True,True,True,True,True
+benchmark,filtering,Find customers from Bengaluru.,SELECT * FROM customers WHERE city = 'Bengaluru',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Bengaluru')","SELECT customer_name FROM customers WHERE city = ""Bangladesh""","SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Bengaluru')",True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers from Mumbai.,SELECT * FROM customers WHERE city = 'Mumbai',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Mumbai')",SELECT customer_name FROM customers WHERE city = 'Madhya Pradesh',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Mumbai')",True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers from Chennai.,SELECT * FROM customers WHERE city = 'Chennai',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Chennai')",SELECT customer_name FROM customers WHERE city = 'Chennai',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Chennai')",True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers older than 40.,SELECT * FROM customers WHERE age > 40,SELECT * FROM customers WHERE age > 40,SELECT customer_name FROM customers WHERE age > 40,SELECT * FROM customers WHERE age > 40,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers younger than 30.,SELECT * FROM customers WHERE age < 30,SELECT * FROM customers WHERE age < 30,SELECT customer_name FROM customers WHERE age < 30,SELECT * FROM customers WHERE age < 30,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find products costing more than 10000.,SELECT * FROM products WHERE price > 10000,SELECT * FROM products WHERE price > 10000.0,SELECT DISTINCT product_name FROM products WHERE price > 10000,SELECT * FROM products WHERE price > 10000.0,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find products costing less than 5000.,SELECT * FROM products WHERE price < 5000,SELECT * FROM products WHERE price < 5000.0,SELECT DISTINCT product_name FROM products WHERE price < 5000,SELECT * FROM products WHERE price < 5000.0,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find orders with quantity greater than 5.,SELECT * FROM orders WHERE quantity > 5,SELECT * FROM orders WHERE quantity > 5,SELECT DISTINCT order_id FROM orders WHERE quantity > 5,SELECT * FROM orders WHERE quantity > 5,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find orders with quantity less than 3.,SELECT * FROM orders WHERE quantity < 3,SELECT * FROM orders WHERE quantity < 3,SELECT DISTINCT quantity FROM orders WHERE quantity < 3,SELECT * FROM orders WHERE quantity < 3,True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers from Hyderabad.,SELECT * FROM customers WHERE city = 'Hyderabad',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Hyderabad')",SELECT customer_name FROM customers WHERE city = 'Hyderabad',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Hyderabad')",True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers from Pune.,SELECT * FROM customers WHERE city = 'Pune',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Pune')",SELECT customer_name FROM customers WHERE city = 'Pennsylvania',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Pune')",True,SQL validation successful.,True,False,True,True,True
+benchmark,filtering,Find customers from Mysuru.,SELECT * FROM customers WHERE city = 'Mysuru',"SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Mysuru')","SELECT customer_name FROM customers WHERE city = ""Mysuru""","SELECT *
+                FROM customers
+                WHERE LOWER(city) = LOWER('Mysuru')",True,SQL validation successful.,True,False,True,True,True
+benchmark,aggregation,Count all customers.,SELECT COUNT(*) FROM customers,SELECT COUNT(*) AS total_customers FROM customers,SELECT count(*) FROM customers,SELECT COUNT(*) AS total_customers FROM customers,True,SQL validation successful.,True,True,True,True,True
+benchmark,aggregation,Count all products.,SELECT COUNT(*) FROM products,SELECT COUNT(*) AS total_products FROM products,SELECT count(*) FROM products,SELECT COUNT(*) AS total_products FROM products,True,SQL validation successful.,True,True,True,True,True
+benchmark,aggregation,Find the average customer age.,SELECT AVG(age) FROM customers,,SELECT AVG ( age ) FROM customers,SELECT AVG ( age ) FROM customers,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the maximum product price.,SELECT MAX(price) FROM products,,SELECT max(price) FROM products,SELECT max(price) FROM products,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the minimum product price.,SELECT MIN(price) FROM products,,SELECT min(price) FROM products,SELECT min(price) FROM products,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the total quantity ordered.,SELECT SUM(quantity) FROM orders,,SELECT sum(quantity) FROM orders,SELECT sum(quantity) FROM orders,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the average product price.,SELECT AVG(price) FROM products,,SELECT avg(price) FROM products,SELECT avg(price) FROM products,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the total number of distinct cities.,SELECT COUNT(DISTINCT city) FROM customers,SELECT DISTINCT city FROM customers,SELECT count(DISTINCT city) FROM list,SELECT DISTINCT city FROM customers,True,SQL validation successful.,False,False,False,False,False
+benchmark,aggregation,Find the maximum order quantity.,SELECT MAX(quantity) FROM orders,,SELECT max(quantity) FROM orders,SELECT max(quantity) FROM orders,True,SQL validation successful.,False,True,True,True,True
+benchmark,aggregation,Find the minimum order quantity.,SELECT MIN(quantity) FROM orders,,SELECT min(quantity) FROM orders,SELECT min(quantity) FROM orders,True,SQL validation successful.,False,True,True,True,True
+benchmark,group_by,Count customers in each city.,"SELECT city, COUNT(*) AS total_customers FROM customers GROUP BY city","SELECT city, COUNT(*) AS total_customers
+            FROM customers
+            GROUP BY city","SELECT count(*), city FROM customers GROUP BY city","SELECT city, COUNT(*) AS total_customers
+            FROM customers
+            GROUP BY city",True,SQL validation successful.,True,False,True,True,True
+benchmark,group_by,Find the number of products in each category.,"SELECT category, COUNT(*) AS total_products FROM products GROUP BY category","SELECT category, COUNT(*) AS total_products
+            FROM products
+            GROUP BY category","SELECT count(*), category FROM products GROUP BY category","SELECT category, COUNT(*) AS total_products
+            FROM products
+            GROUP BY category",True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by,Show customers sorted by age in ascending order.,SELECT * FROM customers ORDER BY age ASC,SELECT * FROM customers ORDER BY age ASC,SELECT customer_name FROM customers ORDER BY age ASC,SELECT * FROM customers ORDER BY age ASC,True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by,Show customers sorted by age in descending order.,SELECT * FROM customers ORDER BY age DESC,SELECT * FROM customers ORDER BY age DESC,SELECT customer_name FROM customers ORDER BY age DESC,SELECT * FROM customers ORDER BY age DESC,True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by,Show products sorted by price in ascending order.,SELECT * FROM products ORDER BY price ASC,SELECT * FROM products ORDER BY price ASC,SELECT product_name FROM products ORDER BY price ASC,SELECT * FROM products ORDER BY price ASC,True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by,Show products sorted by price in descending order.,SELECT * FROM products ORDER BY price DESC,SELECT * FROM products ORDER BY price DESC,SELECT product_name FROM products ORDER BY price DESC,SELECT * FROM products ORDER BY price DESC,True,SQL validation successful.,True,False,True,True,True
+benchmark,join,Show customer names with their orders.,"SELECT c.customer_name, o.order_id
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id","SELECT c.customer_name, o.order_id
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id",SELECT T1.customer_name FROM customers AS T1 JOIN orders AS T2 ON T1.customer_id = T2.customer_id,"SELECT c.customer_name, o.order_id
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id",True,SQL validation successful.,True,False,True,True,True
+benchmark,join,Show product names with their order quantities.,"SELECT p.product_name, o.quantity
+        FROM orders o
+        JOIN products p ON o.product_id = p.product_id","SELECT p.product_name, o.quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id","SELECT T1.product_name, T2.quantity FROM products AS T1 JOIN orders AS T2 ON T1.product_id = T2.product_id GROUP BY T1.product_name","SELECT p.product_name, o.quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id",True,SQL validation successful.,True,False,True,True,True
+benchmark,join,Show customer names and their order dates.,"SELECT c.customer_name, o.order_date
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id","SELECT c.customer_name, o.order_date
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id","SELECT T1.customer_name, T2.order_date FROM customers AS T1 JOIN orders AS T2 ON T1.customer_id = T2.customer_id","SELECT c.customer_name, o.order_date
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id",True,SQL validation successful.,True,True,True,True,True
+benchmark,join_group_by,Find total quantity ordered for each product.,"SELECT p.product_name, SUM(o.quantity) AS total_quantity
+        FROM orders o
+        JOIN products p ON o.product_id = p.product_id
+        GROUP BY p.product_id, p.product_name","SELECT p.product_name,
+                   SUM(o.quantity) AS total_quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+            GROUP BY p.product_id, p.product_name","SELECT sum(quantity), T1.product_id FROM products AS T1 JOIN orders AS T2 ON T1.product_id = T2.product_id GROUP BY T1.product_id","SELECT p.product_name,
+                   SUM(o.quantity) AS total_quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+            GROUP BY p.product_id, p.product_name",True,SQL validation successful.,True,False,True,True,True
+benchmark,join_group_by,Count the number of orders for each customer.,"SELECT c.customer_name, COUNT(o.order_id) AS total_orders
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        GROUP BY c.customer_id, c.customer_name","SELECT c.customer_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id, c.customer_name","SELECT count(*), T1.customer_id FROM customers AS T1 JOIN orders AS T2 ON T1.customer_id = T2.customer_id GROUP BY T1.customer_id","SELECT c.customer_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id, c.customer_name",True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by_limit,Show the top 5 most expensive products.,SELECT * FROM products ORDER BY price DESC LIMIT 5,SELECT * FROM products ORDER BY price DESC LIMIT 5,SELECT t1.product_name FROM products AS t1 JOIN orders BY t1.price DESC LIMIT 5,SELECT * FROM products ORDER BY price DESC LIMIT 5,True,SQL validation successful.,True,False,True,True,True
+benchmark,order_by_limit,Show the 5 youngest customers.,SELECT * FROM customers ORDER BY age ASC LIMIT 5,SELECT * FROM customers ORDER BY age ASC LIMIT 5,SELECT max(T1.age) FROM customers AS T1 JOIN orders BY T1.age LIMIT 5,SELECT * FROM customers ORDER BY age ASC LIMIT 5,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,How many customers are there?,SELECT COUNT(*) FROM customers,SELECT COUNT(*) AS total_customers FROM customers,SELECT count(*) FROM customers,SELECT COUNT(*) AS total_customers FROM customers,True,SQL validation successful.,True,True,True,True,True
+holdout,holdout,List the cities where customers live.,SELECT DISTINCT city FROM customers,SELECT DISTINCT city FROM customers,SELECT city FROM customers,SELECT DISTINCT city FROM customers,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find customers whose age is exactly 25.,SELECT * FROM customers WHERE age = 25,SELECT * FROM customers WHERE age = 25,SELECT customer_name FROM customers WHERE age = 25,SELECT * FROM customers WHERE age = 25,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find products in the Electronics category.,SELECT * FROM products WHERE category = 'Electronics',SELECT * FROM products WHERE LOWER(category) = LOWER('Electronics'),SELECT DISTINCT product_name FROM products WHERE category = 'Electronics',SELECT * FROM products WHERE LOWER(category) = LOWER('Electronics'),True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find orders placed after 2025-06-01.,SELECT * FROM orders WHERE order_date > '2025-06-01',SELECT * FROM orders WHERE order_date > '2025-06-01',SELECT order_date FROM orders WHERE order_date > 'DATE': 2025-06-01,SELECT * FROM orders WHERE order_date > '2025-06-01',True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Calculate the total revenue from all products ordered.,"SELECT SUM(p.price * o.quantity)
+        FROM orders o
+        JOIN products p ON o.product_id = p.product_id","SELECT SUM(p.price * o.quantity) AS total_revenue
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id",SELECT sum(T2.revenue) FROM orders AS T1 JOIN products AS T2 ON T1.product_id = T2.product_id GROUP BY T1.product_id,"SELECT SUM(p.price * o.quantity) AS total_revenue
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find the average order quantity for each customer.,"SELECT c.customer_id, AVG(o.quantity)
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        GROUP BY c.customer_id","SELECT c.customer_id,
+                   AVG(o.quantity) AS average_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id","SELECT avg(quantity), customer_id FROM orders GROUP BY customer_id","SELECT c.customer_id,
+                   AVG(o.quantity) AS average_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.customer_id",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Show the 10 most recent orders.,SELECT * FROM orders ORDER BY order_date DESC LIMIT 10,SELECT * FROM orders ORDER BY order_date DESC LIMIT 10,SELECT ORDER BY date DESC LIMIT 10,SELECT * FROM orders ORDER BY order_date DESC LIMIT 10,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,"Find the number of customers in each city, highest first.","SELECT city, COUNT(*) AS total_customers
+        FROM customers
+        GROUP BY city
+        ORDER BY total_customers DESC","SELECT city, COUNT(*) AS total_customers
+            FROM customers
+            GROUP BY city
+         ORDER BY total_customers DESC","SELECT count(*), city FROM customers GROUP BY city ORDER BY count(*) DESC LIMIT 1","SELECT city, COUNT(*) AS total_customers
+            FROM customers
+            GROUP BY city
+         ORDER BY total_customers DESC",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find products priced between 1000 and 10000.,SELECT * FROM products WHERE price BETWEEN 1000 AND 10000,SELECT * FROM products WHERE price BETWEEN 1000.0 AND 10000.0,SELECT product_name FROM products WHERE price BETWEEN 1000 AND 10000,SELECT * FROM products WHERE price BETWEEN 1000.0 AND 10000.0,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find orders with quantity equal to 4.,SELECT * FROM orders WHERE quantity = 4,SELECT * FROM orders WHERE quantity = 4,SELECT DISTINCT quantity FROM orders WHERE quantity = 4,SELECT * FROM orders WHERE quantity = 4,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find the total number of orders.,SELECT COUNT(*) FROM orders,SELECT COUNT(*) AS total_orders FROM orders,SELECT count(*) FROM orders,SELECT COUNT(*) AS total_orders FROM orders,True,SQL validation successful.,True,True,True,True,True
+holdout,holdout,Find the average age of customers in Bengaluru.,SELECT AVG(age) FROM customers WHERE city = 'Bengaluru',"SELECT AVG(age) AS average_age
+            FROM customers
+            WHERE LOWER(city) = LOWER('Bengaluru')",SELECT avg(age) FROM customers WHERE city = 'Bangladesh',"SELECT AVG(age) AS average_age
+            FROM customers
+            WHERE LOWER(city) = LOWER('Bengaluru')",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find the most expensive product in each category.,"SELECT category, MAX(price) FROM products GROUP BY category","SELECT category, MAX(price) AS maximum_price
+            FROM products
+            GROUP BY category","SELECT category, max(price) FROM products GROUP BY category","SELECT category, MAX(price) AS maximum_price
+            FROM products
+            GROUP BY category",True,SQL validation successful.,True,True,True,True,True
+holdout,holdout,Show the 10 products with the lowest prices.,SELECT * FROM products ORDER BY price ASC LIMIT 10,SELECT * FROM products ORDER BY price ASC LIMIT 10,SELECT t1.product_name FROM products AS t1 JOIN orders BY t1.price LIMIT 10,SELECT * FROM products ORDER BY price ASC LIMIT 10,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find the total quantity ordered in each city.,"SELECT c.city, SUM(o.quantity)
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        GROUP BY c.city","SELECT c.city,
+                   SUM(o.quantity) AS total_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.city","SELECT sum(quantity), city FROM orders GROUP BY city","SELECT c.city,
+                   SUM(o.quantity) AS total_quantity
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            GROUP BY c.city",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find customers whose age is between 30 and 50.,SELECT * FROM customers WHERE age BETWEEN 30 AND 50,SELECT * FROM customers WHERE age BETWEEN 30 AND 50,SELECT customer_name FROM customers WHERE age BETWEEN 30 AND 50,SELECT * FROM customers WHERE age BETWEEN 30 AND 50,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Count the number of orders for each product.,"SELECT p.product_name, COUNT(o.order_id)
+        FROM products p
+        JOIN orders o ON p.product_id = o.product_id
+        GROUP BY p.product_id, p.product_name","SELECT p.product_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.product_id, p.product_name","SELECT count(*), T1.product_name FROM products AS T1 JOIN orders BY T1.product_name","SELECT p.product_name,
+                   COUNT(o.order_id) AS total_orders
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.product_id, p.product_name",True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Show the 10 customers with the highest ages.,SELECT * FROM customers ORDER BY age DESC LIMIT 10,SELECT * FROM customers ORDER BY age DESC LIMIT 10,SELECT customer_name FROM customers ORDER BY age DESC LIMIT 10,SELECT * FROM customers ORDER BY age DESC LIMIT 10,True,SQL validation successful.,True,False,True,True,True
+holdout,holdout,Find the total sales amount for each product category.,"SELECT p.category, SUM(p.price * o.quantity)
+        FROM products p
+        JOIN orders o ON p.product_id = o.product_id
+        GROUP BY p.category","SELECT p.category,
+                   SUM(p.price * o.quantity) AS total_sales
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.category","SELECT sum(T2.sum), T1.category FROM products AS T1 JOIN orders BY T1.category","SELECT p.category,
+                   SUM(p.price * o.quantity) AS total_sales
+            FROM products p
+            JOIN orders o ON p.product_id = o.product_id
+            GROUP BY p.category",True,SQL validation successful.,True,False,True,True,True

@@ -1,0 +1,11 @@
+split,method,correct,total,accuracy_percent
+benchmark,rules_only,32,40,80.0
+benchmark,model_only,15,40,37.5
+benchmark,hybrid,39,40,97.5
+benchmark,validation_on,39,40,97.5
+benchmark,validation_off,39,40,97.5
+holdout,rules_only,20,20,100.0
+holdout,model_only,3,20,15.0
+holdout,hybrid,20,20,100.0
+holdout,validation_on,20,20,100.0
+holdout,validation_off,20,20,100.0
